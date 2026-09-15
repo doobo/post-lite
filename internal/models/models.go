@@ -33,18 +33,22 @@ type Folder struct {
 }
 
 type Request struct {
-	ID           int64     `json:"id"`
-	CollectionID int64     `json:"collection_id"`
-	FolderID     *int64    `json:"folder_id"`
-	OwnerID      *int64    `json:"owner_id"`
-	Name         string    `json:"name"`
-	Method       string    `json:"method"`
-	URL          string    `json:"url"`
-	Headers      string    `json:"headers"`
-	Query        string    `json:"query"`
-	BodyType     string    `json:"body_type"`
-	Body         string    `json:"body"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           int64  `json:"id"`
+	CollectionID int64  `json:"collection_id"`
+	FolderID     *int64 `json:"folder_id"`
+	OwnerID      *int64 `json:"owner_id"`
+	Name         string `json:"name"`
+	Method       string `json:"method"`
+	URL          string `json:"url"`
+	Headers      string `json:"headers"`
+	Query        string `json:"query"`
+	BodyType     string `json:"body_type"`
+	Body         string `json:"body"`
+	// Variables is the GraphQL variables document; only used when BodyType is
+	// "graphql", and kept as text so the editor can show what the user typed.
+	Variables string    `json:"variables"`
+	UseProxy  bool      `json:"use_proxy"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type Environment struct {

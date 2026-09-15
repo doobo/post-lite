@@ -92,7 +92,16 @@ func main() {
 
 	exec := executor.NewExecutor(cfg.Timeout)
 	limiter := auth.NewRateLimiter()
+	// One ephemeral RSA key pair for the login handshake, generated per process:
+	// a restart invalidates outstanding login keys, which costs nothing because
+	// the browser fetches a fresh one right before each sign-in.
+	loginCrypto, err := auth.NewLoginCrypto()
+	if err != nil {
+		log.Error("login keypair", "err", err)
+		os.Exit(1)
+	}
 	srv := httpapi.New(store, vlt, exec, cfg, limiter)
+	srv.SetLoginCrypto(loginCrypto)
 	srv.SetLog(log)
 	srv.SetAuditFunc(func(actor, action, detail string) {
 		line := auth.AuditLine(actor, action, detail)
@@ -154,6 +163,7 @@ func main() {
 // registerAPIRoutes mounts the REST API on the mux.
 func registerAPIRoutes(mux *http.ServeMux, s *httpapi.Server) {
 	// Auth (public).
+	mux.HandleFunc("GET /api/auth/login-key", s.LoginKey)
 	mux.HandleFunc("POST /api/auth/login", s.Login)
 	mux.HandleFunc("POST /api/auth/logout", s.Logout)
 	mux.HandleFunc("GET /api/auth/me", s.Me)

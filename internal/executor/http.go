@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -32,6 +33,12 @@ type In struct {
 	Body     string
 	Follow   bool
 	Timeout  time.Duration
+
+	// ProxyURL, when non-empty, dials through that HTTP/HTTPS proxy instead of
+	// connecting directly (`http://`, `https://`, optionally with userinfo for
+	// a proxy that wants credentials). Empty means a direct connection, which is
+	// the default for every request.
+	ProxyURL string
 }
 
 // Out is the captured (unredacted) response for the UI.
@@ -49,6 +56,12 @@ type Out struct {
 type Executor struct {
 	client    *http.Client
 	transport *http.Transport
+
+	// proxied holds one transport per proxy URL, so pooled connections survive
+	// across requests without rebuilding a transport (and its pool) every time.
+	// Only an admin can change proxy_url, so the map stays tiny.
+	mu      sync.Mutex
+	proxied map[string]*http.Transport
 }
 
 func NewExecutor(timeout time.Duration) *Executor {
@@ -62,7 +75,41 @@ func NewExecutor(timeout time.Duration) *Executor {
 	return &Executor{
 		client:    &http.Client{Transport: transport},
 		transport: transport,
+		proxied:   map[string]*http.Transport{},
 	}
+}
+
+// transportFor returns the transport to use: the shared direct one, or a cached
+// transport that tunnels through the configured proxy.
+func (e *Executor) transportFor(proxyURL string) (*http.Transport, error) {
+	if proxyURL == "" {
+		return e.transport, nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if tr, ok := e.proxied[proxyURL]; ok {
+		return tr, nil
+	}
+	u, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("bad proxy url %q: %w", proxyURL, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("proxy url %q: scheme %q not supported", proxyURL, u.Scheme)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("proxy url %q: missing host", proxyURL)
+	}
+	tr := &http.Transport{
+		Proxy:               http.ProxyURL(u),
+		ForceAttemptHTTP2:   true,
+		DisableCompression:  true,
+		MaxIdleConns:        50,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+	e.proxied[proxyURL] = tr
+	return tr, nil
 }
 
 // whitelist holds the allowed CIDRs.
@@ -94,20 +141,47 @@ func ParseWhitelist(s string) ([]net.IPNet, error) {
 	return out, nil
 }
 
-// checkTarget enforces the SSRF policy: resolve the host and require every
-// A/AAAA result to fall inside the whitelist.
-func checkTarget(ctx context.Context, raw string, wl whitelist) error {
+// parseHTTPTarget validates the parts every mode needs: a parseable URL, only
+// http/https, and a host to talk to.
+func parseHTTPTarget(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("%w: bad url %q", ErrSSRF, raw)
+		return nil, fmt.Errorf("%w: bad url %q", ErrSSRF, raw)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("%w: scheme %q not allowed", ErrSSRF, u.Scheme)
+		return nil, fmt.Errorf("%w: scheme %q not allowed", ErrSSRF, u.Scheme)
+	}
+	if u.Hostname() == "" {
+		return nil, fmt.Errorf("%w: missing host", ErrSSRF)
+	}
+	return u, nil
+}
+
+// checkTargetFor is the policy actually applied to a request: with a proxy the
+// target only has to be a well-formed http(s) URL, because the *proxy* resolves
+// and reaches it — a local DNS lookup would refuse exactly the hosts a proxy
+// exists to reach.
+//
+// That is the documented trade-off of enabling a proxy: its address is
+// admin-configured, so it is trusted egress, and the CIDR whitelist keeps
+// guarding direct connections only. Everything cheap still holds: http/https
+// only, a real host, and a re-check on every redirect hop.
+func checkTargetFor(ctx context.Context, raw string, wl whitelist, proxyURL string) error {
+	if proxyURL != "" {
+		_, err := parseHTTPTarget(raw)
+		return err
+	}
+	return checkTarget(ctx, raw, wl)
+}
+
+// checkTarget enforces the SSRF policy for a direct connection: resolve the host
+// and require every A/AAAA result to fall inside the whitelist.
+func checkTarget(ctx context.Context, raw string, wl whitelist) error {
+	u, err := parseHTTPTarget(raw)
+	if err != nil {
+		return err
 	}
 	host := u.Hostname()
-	if host == "" {
-		return fmt.Errorf("%w: missing host", ErrSSRF)
-	}
 	// If the host is already an IP, check it directly.
 	if ip := net.ParseIP(host); ip != nil {
 		if !wl.contains(ip) {
@@ -142,12 +216,16 @@ func (e *Executor) Execute(ctx context.Context, in In, wl whitelist) (*Out, erro
 	if in.Timeout <= 0 {
 		in.Timeout = 60 * time.Second
 	}
-	if err := checkTarget(ctx, in.URL, wl); err != nil {
+	transport, err := e.transportFor(in.ProxyURL)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkTargetFor(ctx, in.URL, wl, in.ProxyURL); err != nil {
 		return nil, err
 	}
 
 	client := &http.Client{
-		Transport: e.transport,
+		Transport: transport,
 		Timeout:   in.Timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= maxRedirects {
@@ -157,7 +235,7 @@ func (e *Executor) Execute(ctx context.Context, in In, wl whitelist) (*Out, erro
 				return http.ErrUseLastResponse
 			}
 			// Re-validate every redirect target.
-			if err := checkTarget(ctx, req.URL.String(), wl); err != nil {
+			if err := checkTargetFor(ctx, req.URL.String(), wl, in.ProxyURL); err != nil {
 				return err
 			}
 			return nil

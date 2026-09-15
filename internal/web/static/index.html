@@ -10,9 +10,10 @@
 
 <div id="login-view" class="login-wrap">
   <form id="login-form" class="card login-card">
+    <span class="brand-mark" aria-hidden="true">P</span>
     <h1>PostLite</h1>
-    <p class="muted">Intranet API client</p>
-    <input id="login-user" placeholder="Username" autocomplete="username" required>
+    <p class="muted" style="margin-top:-4px">Intranet API client — secrets stay server-side.</p>
+    <input id="login-user" placeholder="Username" autocomplete="username" autofocus required>
     <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password" required>
     <button type="submit" class="primary">Sign in</button>
     <p id="login-err" class="err"></p>
@@ -21,21 +22,51 @@
 
 <div id="app-view" hidden>
   <header>
-    <strong>PostLite</strong>
-    <span id="who" class="muted"></span>
-    <span id="flash"></span>
+    <span class="brand"><span class="brand-mark" aria-hidden="true">P</span>PostLite</span>
+    <span class="spacer"></span>
+    <div id="flash" class="toasts" role="status" aria-live="polite"></div>
+    <!-- Appearance picker: app.js sets html[data-theme] from this and remembers
+         the choice in localStorage, same idea as hoppscotch's theme switcher. -->
+    <select id="theme-select" class="theme-select" aria-label="Theme" title="Appearance">
+      <option value="dark">Dark</option>
+      <option value="light">Light</option>
+      <option value="black">Black</option>
+    </select>
+    <span class="chip"><span id="who"></span></span>
     <button id="btn-logout" class="ghost">Log out</button>
   </header>
   <div class="cols">
     <aside>
-      <nav id="main-nav">
-        <button data-view="collections">Collections</button>
-        <button data-view="editor">Request</button>
-        <button data-view="environments">Environments</button>
-        <button data-view="history">History</button>
-        <button data-view="secrets" class="admin-only">Secrets</button>
-        <button data-view="users" class="admin-only">Users</button>
-        <button data-view="settings" class="admin-only">Settings</button>
+      <nav id="main-nav" aria-label="Sections">
+        <button data-view="collections">
+          <svg class="navico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 2h4.5A1.5 1.5 0 0 1 14 6.5v5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7Z"/></svg>
+          Collections
+        </button>
+        <button data-view="editor">
+          <svg class="navico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h6"/><circle cx="12.5" cy="11.5" r="1.8"/></svg>
+          Request
+        </button>
+        <button data-view="environments">
+          <svg class="navico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M8 2.2v11.6M2.6 8h10.8"/><circle cx="8" cy="8" r="5.4"/></svg>
+          Environments
+        </button>
+        <button data-view="history">
+          <svg class="navico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M8 4.5V8l2.5 1.5"/><path d="M2.7 8a5.3 5.3 0 1 0 1.6-3.8"/><path d="M2.5 2.6v2.2h2.2"/></svg>
+          History
+        </button>
+        <div class="navsep admin-only" aria-hidden="true"></div>
+        <button data-view="secrets" class="admin-only">
+          <svg class="navico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="3.5" y="7" width="9" height="6.2" rx="1.4"/><path d="M5.8 7V5.4a2.2 2.2 0 0 1 4.4 0V7"/></svg>
+          Secrets
+        </button>
+        <button data-view="users" class="admin-only">
+          <svg class="navico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="6" cy="6" r="2.3"/><path d="M2.4 13c0-2 1.6-3.4 3.6-3.4S9.6 11 9.6 13"/><path d="M10.4 5.2a2 2 0 0 1 0 3.9M11.4 13c0-1.5-.5-2.6-1.3-3.3"/></svg>
+          Users
+        </button>
+        <button data-view="settings" class="admin-only">
+          <svg class="navico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="2.1"/><path d="M8 2.3v1.6M8 12.1v1.6M2.3 8h1.6M12.1 8h1.6M4 4l1.1 1.1M10.9 10.9 12 12M12 4l-1.1 1.1M5.1 10.9 4 12"/></svg>
+          Settings
+        </button>
       </nav>
       <div id="tree" class="tree"></div>
     </aside>
@@ -43,6 +74,29 @@
   </div>
 </div>
 
+<!-- In-page replacement for alert()/confirm()/prompt(): a form so Enter
+     confirms, Escape and a backdrop click cancel. -->
+<div id="dialog" class="dialog-wrap" hidden>
+  <form id="dialog-card" class="card dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+    <h2 id="dialog-title"></h2>
+    <p id="dialog-msg" class="muted"></p>
+    <div id="dialog-field" class="field" hidden>
+      <span id="dialog-field-label" class="muted"></span>
+      <div class="row">
+        <input id="dialog-input" autocomplete="off" spellcheck="false">
+        <button type="button" id="dialog-copy" class="ghost" onclick="copyDialogInput()" hidden>Copy</button>
+      </div>
+    </div>
+    <div class="row dialog-actions">
+      <button type="button" id="dialog-cancel" class="ghost">Cancel</button>
+      <button type="submit" id="dialog-ok" class="primary">OK</button>
+    </div>
+  </form>
+</div>
+
+<!-- loginenc.js is the pure-JS RSA-OAEP fallback for the login handshake; it only
+     runs where crypto.subtle is missing (plain HTTP, i.e. no secure context). -->
+<script src="/loginenc.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

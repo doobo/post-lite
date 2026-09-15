@@ -8,6 +8,7 @@ bin/
 # 运行数据（SQLite、master.key、自签证书）
 data/
 dev-data/
+dev-ui-data/
 smoke-data/
 
 # 本地日志与调试残留

@@ -23,6 +23,9 @@ type executeBody struct {
 		Query    []kvPair          `json:"query"`
 		BodyType string            `json:"body_type"`
 		Body     string            `json:"body"`
+		// Variables carries the GraphQL variables document (body_type=graphql).
+		Variables string `json:"variables"`
+		UseProxy  bool   `json:"use_proxy"`
 	} `json:"ad_hoc"`
 	Vars            map[string]string `json:"vars"`
 	ActiveEnv       *activateBody     `json:"active_env"`
@@ -44,13 +47,15 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve the target: either a stored request or an ad-hoc definition.
 	var (
-		method  string
-		urlStr  string
-		headers map[string]string
-		query   [][2]string
-		bodyT   string
-		body    string
-		reqID   *int64
+		method    string
+		urlStr    string
+		headers   map[string]string
+		query     [][2]string
+		bodyT     string
+		body      string
+		variables string
+		reqID     *int64
+		useProxy  bool
 	)
 	switch {
 	case b.RequestID != nil:
@@ -69,6 +74,8 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 		urlStr = rq.URL
 		bodyT = rq.BodyType
 		body = rq.Body
+		variables = rq.Variables
+		useProxy = rq.UseProxy
 		p := repository.RequestPayload{Headers: rq.Headers, Query: rq.Query}
 		headers = p.HeadersMap()
 		query = p.QueryPairs()
@@ -81,6 +88,8 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 		headers = b.AdHoc.Headers
 		bodyT = b.AdHoc.BodyType
 		body = b.AdHoc.Body
+		variables = b.AdHoc.Variables
+		useProxy = b.AdHoc.UseProxy
 		for _, q := range b.AdHoc.Query {
 			query = append(query, [2]string{q.K, q.V})
 		}
@@ -144,6 +153,19 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 	}
 	if bodyT != "none" {
 		body, _ = resolver.Resolve(body)
+		variables, _ = resolver.Resolve(variables)
+	}
+	// GraphQL is a body_type, not a separate method: the editor keeps the query
+	// in `body` and the variables document next to it, and the wire format is
+	// composed here so the executor stays a plain HTTP client.
+	if bodyT == "graphql" {
+		gql, err := executor.GraphQLBody(body, variables)
+		if err != nil {
+			fail(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		body = gql
+		bodyT = "json"
 	}
 	warnings := resolver.Warnings()
 	sort.Strings(warnings)
@@ -174,9 +196,23 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Proxy: opt-in per request, configured once by an admin. Asking for a proxy
+	// that was never configured is an error rather than a silent direct call —
+	// quietly ignoring the flag would hide a routing mistake.
+	proxyURL := ""
+	if useProxy {
+		proxyURL = strings.TrimSpace(s.settingOr("proxy_url", ""))
+		if proxyURL == "" {
+			fail(w, http.StatusBadRequest, "proxy_not_configured",
+				"this request is set to use a proxy, but no proxy_url is configured")
+			return
+		}
+	}
+
 	in := executor.In{
 		Method: method, URL: urlOut, Headers: headers, Query: query,
 		BodyType: bodyT, Body: body, Follow: b.FollowRedirects, Timeout: timeout,
+		ProxyURL: proxyURL,
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), timeout+5*time.Second)
@@ -235,6 +271,9 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 		"body_truncated": out.Truncated,
 		"final_url":      redactor.Text(out.FinalURL),
 		"warnings":       warnings,
+		// Whether this went through the proxy. The URL itself is not echoed:
+		// it can carry credentials and is admin-only knowledge.
+		"proxied": proxyURL != "",
 	})
 }
 

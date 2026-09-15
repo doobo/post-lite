@@ -1,0 +1,13 @@
+# 换行统一为 LF：仓库与工作区一致，避免 Windows（core.autocrlf=true）下
+# 检出成 CRLF —— Makefile 的 recipe 在 CRLF 下会直接报错，跨平台 diff 也全是噪音。
+# 该规则优先于 core.autocrlf。
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary

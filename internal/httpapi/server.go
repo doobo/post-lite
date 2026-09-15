@@ -24,6 +24,11 @@ type Server struct {
 	Limiter *auth.RateLimiter
 	Log     *slog.Logger
 
+	// LoginCrypto is the ephemeral key pair behind the encrypted login handshake.
+	// nil means "not configured": logins are then refused rather than accepted
+	// in clear text. (Not named Login: that is the route handler.)
+	LoginCrypto *auth.LoginCrypto
+
 	// auditf, if set, records admin operations (stdout + settings table).
 	auditf func(actor, action, detail string)
 }
@@ -43,6 +48,9 @@ func (s *Server) SetLog(l *slog.Logger) { s.Log = l }
 
 // SetAuditFunc installs the audit sink (stdout + settings table).
 func (s *Server) SetAuditFunc(f func(actor, action, detail string)) { s.auditf = f }
+
+// SetLoginCrypto installs the login handshake key pair.
+func (s *Server) SetLoginCrypto(lc *auth.LoginCrypto) { s.LoginCrypto = lc }
 
 // audit records an admin operation.
 func (s *Server) audit(actor, action, detail string) {

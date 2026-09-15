@@ -13,6 +13,24 @@ var validMethods = map[string]struct{}{
 	"GET": {}, "POST": {}, "PUT": {}, "PATCH": {}, "DELETE": {},
 }
 
+// validBodyTypes is what the executor knows how to send: `none` (no body),
+// `json` / `raw` (sent as typed) and `graphql` (query + variables composed into
+// a GraphQL envelope at send time). An empty value means "none".
+var validBodyTypes = map[string]struct{}{
+	"none": {}, "json": {}, "raw": {}, "graphql": {},
+}
+
+func checkBodyType(w http.ResponseWriter, bodyType string) bool {
+	if bodyType == "" {
+		return true
+	}
+	if _, ok := validBodyTypes[bodyType]; !ok {
+		fail(w, http.StatusBadRequest, "bad_request", "body_type must be one of none/json/raw/graphql")
+		return false
+	}
+	return true
+}
+
 func (s *Server) listRequests(w http.ResponseWriter, r *http.Request) {
 	u, okd := s.requireUser(w, r)
 	if !okd {
@@ -66,6 +84,9 @@ func (s *Server) createRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.URL == "" {
 		fail(w, http.StatusBadRequest, "bad_request", "url is required")
+		return
+	}
+	if !checkBodyType(w, p.BodyType) {
 		return
 	}
 	if p.CollectionID == 0 {
@@ -152,6 +173,9 @@ func (s *Server) updateRequest(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "bad_request", "method must be one of GET/POST/PUT/PATCH/DELETE")
 		return
 	}
+	if !checkBodyType(w, p.BodyType) {
+		return
+	}
 	p.CollectionID = rq.CollectionID
 	p.FolderID = rq.FolderID
 	if p.URL == "" {
@@ -164,8 +188,12 @@ func (s *Server) updateRequest(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{"id": id})
 }
 
+// deleteRequest is admin-only, unlike the other request writes: an ordinary user
+// can edit and save the requests they can see, but only an admin can remove one
+// (a deleted request also strands its history rows). The UI hides the button for
+// non-admins; this check is what actually enforces it.
 func (s *Server) deleteRequest(w http.ResponseWriter, r *http.Request) {
-	u, okd := s.requireUser(w, r)
+	admin, okd := s.requireAdmin(w, r)
 	if !okd {
 		return
 	}
@@ -173,20 +201,14 @@ func (s *Server) deleteRequest(w http.ResponseWriter, r *http.Request) {
 	if !okid {
 		return
 	}
-	rq, err := s.Store.Requests.Get(id)
-	if err != nil {
+	if _, err := s.Store.Requests.Get(id); err != nil {
 		fail(w, http.StatusNotFound, "not_found", "request not found")
-		return
-	}
-	c, err := s.Store.Collections.Get(rq.CollectionID)
-	if err != nil || !s.Store.CanManageRequest(u, rq, c) {
-		fail(w, http.StatusForbidden, "forbidden", "cannot manage this request")
 		return
 	}
 	if err := s.Store.Requests.Delete(id); err != nil {
 		fail(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	s.audit(u.Username, "request.delete", "id="+itoa(id))
+	s.audit(admin.Username, "request.delete", "id="+itoa(id))
 	ok(w, map[string]any{"deleted": id})
 }

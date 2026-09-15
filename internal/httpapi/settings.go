@@ -3,6 +3,7 @@ package httpapi
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ var allowedSettings = map[string]struct{}{
 	"ssrf_whitelist": {},
 	"exec_timeout":   {},
 	"max_history":    {},
+	"proxy_url":      {},
 }
 
 // parseTimeout accepts a Go duration string ("60s", "2m") or a bare number
@@ -53,6 +55,19 @@ func validateSetting(key, value string) error {
 		if n, err := strconv.Atoi(strings.TrimSpace(value)); err != nil || n <= 0 {
 			return fmt.Errorf("max_history must be a positive integer, got %q", value)
 		}
+	case "proxy_url":
+		// Only http/https: those are the two schemes the executor can dial, and
+		// rejecting the rest here keeps a typo from failing at send time.
+		u, err := url.Parse(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("proxy_url is not a valid URL: %v", err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("proxy_url must start with http:// or https://, got %q", value)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("proxy_url needs a host:port, got %q", value)
+		}
 	}
 	return nil
 }
@@ -71,15 +86,12 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		"ssrf_whitelist": s.settingOr("ssrf_whitelist", defaultWhitelist),
 		"exec_timeout":   s.CFG.Timeout.String(),
 		"max_history":    "1000",
+		"proxy_url":      "", // empty = every request goes direct
 	}
-	if v, ok := all["ssrf_whitelist"]; ok {
-		out["ssrf_whitelist"] = v
-	}
-	if v, ok := all["exec_timeout"]; ok {
-		out["exec_timeout"] = v
-	}
-	if v, ok := all["max_history"]; ok {
-		out["max_history"] = v
+	for k := range out {
+		if v, ok := all[k]; ok {
+			out[k] = v
+		}
 	}
 	ok(w, out)
 }

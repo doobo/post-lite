@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-var migrations = []string{migrationV1}
+var migrations = []string{migrationV1, migrationV2, migrationV3}
 
 const migrationV1 = `
 CREATE TABLE users (
@@ -89,6 +89,20 @@ CREATE TABLE settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+`
+
+// migrationV2 adds the per-request "send this one through the configured proxy"
+// flag. Existing rows default to 0 = direct, which is also the UI default, so an
+// upgrade never starts routing traffic somewhere new.
+const migrationV2 = `
+ALTER TABLE requests ADD COLUMN use_proxy INTEGER NOT NULL DEFAULT 0;
+`
+
+// migrationV3 adds the GraphQL variables document. It is a separate column
+// rather than a second body so body_type=graphql keeps the query in `body`
+// (what a plain editor would show) and the variables stay JSON-checked on send.
+const migrationV3 = `
+ALTER TABLE requests ADD COLUMN variables TEXT;
 `
 
 func Migrate(db *sql.DB) error {

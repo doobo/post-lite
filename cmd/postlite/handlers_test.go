@@ -1,8 +1,13 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -65,12 +70,106 @@ func mustRequest(t *testing.T, ts *testServer, cookie *http.Cookie, body map[str
 
 // ---- login / session ----
 
+// encryptedLogin fetches a login key from the server and returns the request
+// body the browser would post: the password, RSA-OAEP encrypted under the
+// single-use challenge. Tests go through this instead of naming a plain-text
+// field, which no longer exists.
+func (ts *testServer) encryptedLogin(t *testing.T, ip, username, password string) map[string]any {
+	t.Helper()
+
+	rec := ts.callFrom("GET", "/api/auth/login-key", ip, nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login-key = %d (%s)", rec.Code, rec.Body.String())
+	}
+	resp := respOf(t, rec)
+	var key struct {
+		N         string `json:"n"`
+		E         int    `json:"e"`
+		Challenge string `json:"challenge"`
+	}
+	resp.decode(t, &key)
+
+	modulus, ok := new(big.Int).SetString(key.N, 16)
+	if !ok {
+		t.Fatalf("login key modulus %q is not hex", key.N)
+	}
+	// Rebuilding the key from n/e also proves the published numbers match the
+	// private key: a mismatch would fail decryption on the server side.
+	pub := &rsa.PublicKey{N: modulus, E: key.E}
+	plain, err := json.Marshal(map[string]string{"c": key.Challenge, "p": password})
+	if err != nil {
+		t.Fatalf("marshal login payload: %v", err)
+	}
+	ct, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pub, plain, nil)
+	if err != nil {
+		t.Fatalf("encrypt login payload: %v", err)
+	}
+	return map[string]any{"username": username, "enc": base64.StdEncoding.EncodeToString(ct)}
+}
+
+// TestLoginRefusesUnencryptedPasswords pins the contract that makes the
+// handshake worth anything: there is no fallback to a clear-text password.
+func TestLoginRefusesUnencryptedPasswords(t *testing.T) {
+	ts := newTestServer(t)
+	ts.createUser("alice", "user", loginPassword)
+
+	rec := ts.callFrom("POST", "/api/auth/login", testRemoteAddr, nil,
+		map[string]any{"username": "alice", "password": loginPassword})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("plain-text login = %d, want 400 (%s)", rec.Code, rec.Body.String())
+	}
+	if r := respOf(t, rec); r.Error == nil || r.Error.Code != "encryption_required" {
+		t.Errorf("error = %+v, want code encryption_required", r.Error)
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Errorf("a refused login still set cookies: %v", rec.Result().Cookies())
+	}
+}
+
+// TestLoginKeyIsSingleUse replays one captured ciphertext. Replay protection is
+// the reason the challenge exists at all: without it, a logged request body is a
+// working credential.
+func TestLoginKeyIsSingleUse(t *testing.T) {
+	ts := newTestServer(t)
+	ts.createUser("alice", "user", loginPassword)
+	body := ts.encryptedLogin(t, testRemoteAddr, "alice", loginPassword)
+
+	first := ts.callFrom("POST", "/api/auth/login", testRemoteAddr, nil, body)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first login = %d (%s)", first.Code, first.Body.String())
+	}
+	replay := ts.callFrom("POST", "/api/auth/login", testRemoteAddr, nil, body)
+	if replay.Code != http.StatusBadRequest {
+		t.Fatalf("replayed login = %d, want 400 (%s)", replay.Code, replay.Body.String())
+	}
+	if r := respOf(t, replay); r.Error == nil || r.Error.Code != "bad_login_payload" {
+		t.Errorf("replay error = %+v, want code bad_login_payload", r.Error)
+	}
+	if len(replay.Result().Cookies()) != 0 {
+		t.Errorf("a replayed login still set cookies: %v", replay.Result().Cookies())
+	}
+}
+
+// TestLoginRejectsGarbageCiphertext covers tampered or truncated payloads.
+func TestLoginRejectsGarbageCiphertext(t *testing.T) {
+	ts := newTestServer(t)
+	ts.createUser("alice", "user", loginPassword)
+
+	for _, enc := range []string{"", "not-base64!!", base64.StdEncoding.EncodeToString(make([]byte, 256))} {
+		rec := ts.callFrom("POST", "/api/auth/login", testRemoteAddr, nil,
+			map[string]any{"username": "alice", "enc": enc})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("login with enc=%q = %d, want 400 (%s)", enc, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestLoginIssuesAWorkingSession(t *testing.T) {
 	ts := newTestServer(t)
 	uid := ts.createUser("alice", "user", loginPassword)
 
 	rec := ts.callFrom("POST", "/api/auth/login", testRemoteAddr, nil,
-		map[string]any{"username": "alice", "password": loginPassword})
+		ts.encryptedLogin(t, testRemoteAddr, "alice", loginPassword))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("login = %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -147,7 +246,7 @@ func TestSessionCookieIsSecureUnderTLS(t *testing.T) {
 	ts.createUser("alice", "user", loginPassword)
 
 	rec := ts.callFrom("POST", "/api/auth/login", testRemoteAddr, nil,
-		map[string]any{"username": "alice", "password": loginPassword})
+		ts.encryptedLogin(t, testRemoteAddr, "alice", loginPassword))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("login = %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -168,7 +267,7 @@ func TestLoginRateLimiting(t *testing.T) {
 	)
 	login := func(ip, user, pw string) *httptest.ResponseRecorder {
 		return ts.callFrom("POST", "/api/auth/login", ip, nil,
-			map[string]any{"username": user, "password": pw})
+			ts.encryptedLogin(t, ip, user, pw))
 	}
 
 	// A wrong password and an unknown account must be indistinguishable.

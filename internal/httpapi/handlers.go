@@ -4,9 +4,10 @@ import "net/http"
 
 // Exported route handlers (thin wrappers over the unexported implementations).
 
-func (s *Server) Login(w http.ResponseWriter, r *http.Request)  { s.login(w, r) }
-func (s *Server) Logout(w http.ResponseWriter, r *http.Request) { s.logout(w, r) }
-func (s *Server) Me(w http.ResponseWriter, r *http.Request)     { s.me(w, r) }
+func (s *Server) Login(w http.ResponseWriter, r *http.Request)    { s.login(w, r) }
+func (s *Server) LoginKey(w http.ResponseWriter, r *http.Request) { s.loginKey(w, r) }
+func (s *Server) Logout(w http.ResponseWriter, r *http.Request)   { s.logout(w, r) }
+func (s *Server) Me(w http.ResponseWriter, r *http.Request)       { s.me(w, r) }
 
 func (s *Server) ListUsers(w http.ResponseWriter, r *http.Request)         { s.listUsers(w, r) }
 func (s *Server) CreateUser(w http.ResponseWriter, r *http.Request)        { s.createUser(w, r) }

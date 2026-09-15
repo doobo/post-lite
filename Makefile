@@ -1,10 +1,17 @@
 BINARY := bin/postlite
 PKG := ./cmd/postlite
+# Offline password recovery tool (see cmd/pwreset): one binary, no server needed.
+PWRESET := bin/pwreset
+PWRESET_PKG := ./cmd/pwreset
 
-.PHONY: build run vet test clean web
+.PHONY: build run vet test clean web pwreset
 
 build:
 	go build -ldflags="-s -w" -o $(BINARY) $(PKG)
+	go build -ldflags="-s -w" -o $(PWRESET) $(PWRESET_PKG)
+
+pwreset:
+	go build -ldflags="-s -w" -o $(PWRESET) $(PWRESET_PKG)
 
 run: build
 	./$(BINARY) -addr :5680 -data ./data -timeout 60s -max-history 1000

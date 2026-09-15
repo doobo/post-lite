@@ -90,6 +90,11 @@ func newTestServer(t *testing.T, opts ...serverOption) *testServer {
 	store := repository.New(sdb)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := httpapi.New(store, vault, executor.NewExecutor(cfg.Timeout), cfg, auth.NewRateLimiter())
+	loginCrypto, err := auth.NewLoginCrypto()
+	if err != nil {
+		t.Fatalf("auth.NewLoginCrypto: %v", err)
+	}
+	srv.SetLoginCrypto(loginCrypto)
 	srv.SetLog(logger)
 
 	ts := &testServer{t: t, db: sdb, store: store, vault: vault, cfg: cfg}

@@ -221,16 +221,20 @@ type expFolder struct {
 	Name     string `json:"name"`
 }
 
+// expRequest is one request in a postlite/v1 export. use_proxy is deliberately
+// absent: a proxy preference only means something on the instance that has the
+// proxy configured, so importing a collection elsewhere must not carry it over.
 type expRequest struct {
-	ID       int64             `json:"id"`
-	FolderID *int64            `json:"folder_id"`
-	Name     string            `json:"name"`
-	Method   string            `json:"method"`
-	URL      string            `json:"url"`
-	Headers  map[string]string `json:"headers"`
-	Query    []kvPair          `json:"query"`
-	BodyType string            `json:"body_type"`
-	Body     string            `json:"body"`
+	ID        int64             `json:"id"`
+	FolderID  *int64            `json:"folder_id"`
+	Name      string            `json:"name"`
+	Method    string            `json:"method"`
+	URL       string            `json:"url"`
+	Headers   map[string]string `json:"headers"`
+	Query     []kvPair          `json:"query"`
+	BodyType  string            `json:"body_type"`
+	Body      string            `json:"body"`
+	Variables string            `json:"variables,omitempty"` // graphql only
 }
 
 type kvPair struct {
@@ -279,7 +283,7 @@ func (s *Server) exportCollection(w http.ResponseWriter, r *http.Request) {
 	for _, rq := range requests {
 		er := expRequest{
 			ID: rq.ID, FolderID: rq.FolderID, Name: rq.Name, Method: rq.Method,
-			URL: rq.URL, BodyType: rq.BodyType, Body: rq.Body,
+			URL: rq.URL, BodyType: rq.BodyType, Body: rq.Body, Variables: rq.Variables,
 		}
 		if rq.Headers != "" {
 			_ = json.Unmarshal([]byte(rq.Headers), &er.Headers)
@@ -369,6 +373,7 @@ func repositoryRequestPayload(rq expRequest, colID int64, oldToNew map[int64]int
 	p.URL = rq.URL
 	p.BodyType = rq.BodyType
 	p.Body = rq.Body
+	p.Variables = rq.Variables
 	if rq.Headers != nil {
 		b, _ := json.Marshal(rq.Headers)
 		p.Headers = string(b)

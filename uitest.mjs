@@ -15,6 +15,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 let client;
 let signedIn = false;
+// Reset by the USERS step: resetting a password invalidates the one the user
+// was created with, so later steps must sign in with the new one-time password.
+let testerPassword = 'pw123456';
+// {{host}} has to point at the instance under test, not at whatever happens to
+// be listening on the default dev port.
+const HOST = new URL(BASE).host;
 
 async function connect() {
   const targets = await (await fetch(CDP + '/json/list')).json();
@@ -118,6 +124,14 @@ const cssVisible = (sel) =>
      const r = el.getBoundingClientRect();
      return (r.width > 0 && r.height > 0) ? 'visible' : 'zero-size'; })()`;
 
+// The UI does not call native confirm()/prompt() any more; feedback is a toast
+// in #flash and input happens in the #dialog form.
+const dialogOpen = `document.querySelector('#dialog').hidden === false`;
+const dialogClosed = `document.querySelector('#dialog').hidden === true`;
+const typeDialog = (v) => `document.querySelector('#dialog-input').value = ${JSON.stringify(v)}; true`;
+const clickDialogOk = `document.querySelector('#dialog-ok').click(); true`;
+const clearFlash = `document.querySelector('#flash').innerHTML = ''; true`;
+
 async function main() {
   client = await connect();
   await client.send('Runtime.enable');
@@ -169,6 +183,35 @@ async function main() {
     return 'editor shows the no-collections hint';
   });
 
+  await step('THEME: three palettes, switchable and remembered', async () => {
+    const paint = "getComputedStyle(document.body).backgroundColor + '|' + getComputedStyle(document.body).color";
+    const pick = (name) => evaluate(`(() => { const s = document.querySelector('#theme-select');\n      s.value = ${JSON.stringify(name)}; s.dispatchEvent(new Event('change')); })(); true`);
+    const seen = {};
+    for (const name of ['light', 'dark', 'black']) {
+      await pick(name);
+      await waitFor(name + ' applied', `document.documentElement.dataset.theme === ${JSON.stringify(name)}`);
+      seen[name] = await evaluate(paint);
+    }
+    expect('each palette paints differently', new Set(Object.values(seen)).size === 3, JSON.stringify(seen));
+    expect('light is light', /244, 246, 250/.test(seen.light), seen.light);
+    expect('black is black', /rgb\(0, 0, 0\)/.test(seen.black), seen.black);
+
+    await pick('light');
+    await client.send('Page.reload');
+    // Wait for the session to come back too: the shell (and its theme picker) is
+    // in the DOM even while the login view is up, so checking the picker alone
+    // would race the /auth/me round trip and leave later steps signed out.
+    await waitFor('app restored after reload', `(() => {
+      const app = document.querySelector('#app-view');
+      const who = document.querySelector('#who');
+      return !!app && app.hidden === false && !!who && who.textContent.includes('admin')
+        && document.querySelector('#theme-select').value === 'light';
+    })()`, 15000);
+    expect('theme remembered across a reload', (await evaluate('document.documentElement.dataset.theme')) === 'light');
+    await pick('dark');
+    return 'three palettes, remembered across a reload';
+  });
+
   await step('SECRETS: store a secret, the UI must never show the value', async () => {
     await evaluate(clickNav('secrets'));
     await waitFor('secrets view', `!!document.querySelector('#new-sec-name')`);
@@ -190,6 +233,10 @@ async function main() {
     await waitFor('collection in tree', `document.querySelector('#tree').textContent.includes('UI Smoke')`);
 
     await evaluate(`${btnByText('#content', '+ Folder')}.click(); true`);
+    await waitFor('folder dialog', dialogOpen);
+    await evaluate(typeDialog('folder-1'));
+    await evaluate(clickDialogOk);
+    await waitFor('dialog closed', dialogClosed);
     await waitFor('folder in tree', `document.querySelector('#tree').textContent.includes('folder-1')`);
 
     await evaluate(`${btnByText('#content', '+ Request')}.click(); true`);
@@ -224,7 +271,8 @@ async function main() {
     await waitFor('result panel', `!!document.querySelector('#result .result')`, 10000);
     const result = await evaluate(`document.querySelector('#result').textContent`);
     expect('status 200 rendered', /Response\s*200/.test(result), result.slice(0, 140));
-    expect('final url masked', result.includes('key=***'), result.slice(0, 200));
+    // the query carried {{sec.demo_key}}; the seed value must be gone from the URL
+    expect('final url masked', /probe=\*\*\*/.test(result), result.slice(0, 200));
     expect('secret never shown', !result.includes(SECRET_VALUE));
     expect('response headers rendered', result.includes('Content-Type'));
     return saved.trim();
@@ -239,17 +287,87 @@ async function main() {
     return status.trim();
   });
 
+  await step('GRAPHQL: body type swaps in a variables panel', async () => {
+    await evaluate(clickNav('editor'));
+    await waitFor('editor', `!!document.querySelector('#req-url')`);
+    // The request is already open from the previous step and loadRequest() is
+    // async, so waiting on the name alone would race a stale DOM: mark the URL
+    // and wait for the stored value to come back from the server instead.
+    await evaluate(`document.querySelector('#req-url').value = 'about:reload-probe'; true`);
+    await evaluate(`[...document.querySelectorAll('#tree .node')]
+      .find(n => n.textContent.includes('ui smoke request')).click(); true`);
+    await waitFor('request reloaded from the server',
+      `document.querySelector('#req-url').value !== 'about:reload-probe' && document.querySelector('#req-name').value === 'ui smoke request'`);
+
+    await evaluate(`(() => { const s = document.querySelector('#req-bodytype');
+      s.value = 'graphql'; s.dispatchEvent(new Event('change')); })(); true`);
+    await waitFor('variables panel shown', `document.querySelector('#req-gql').hidden === false`);
+    expect('method switched to POST', (await evaluate(`document.querySelector('#req-method').value`)) === 'POST');
+    const hint = await evaluate(`document.querySelector('#req-body-hint').textContent`);
+    expect('hint explains the envelope', /query/.test(hint), hint);
+
+    await evaluate(`document.querySelector('#req-body').value = 'query Me { me { name } }';
+      document.querySelector('#req-gql-vars').value = '{"id":"42"}';
+      document.querySelector('#btn-save').click(); true`);
+    await waitFor('saved', `document.querySelector('#send-status').textContent.startsWith('saved #')`);
+
+    // Reload it from the tree: query and variables must come back.
+    await evaluate(`document.querySelector('#req-url').value = 'about:reload-probe2'; true`);
+    await evaluate(`[...document.querySelectorAll('#tree .node')]
+      .find(n => n.textContent.includes('ui smoke request')).click(); true`);
+    await waitFor('graphql request reloaded',
+      `document.querySelector('#req-bodytype').value === 'graphql'
+        && document.querySelector('#req-gql-vars').value === '{"id":"42"}'
+        && document.querySelector('#req-url').value !== 'about:reload-probe2'`);
+    expect('panel still shown for a stored graphql request', (await evaluate(`document.querySelector('#req-gql').hidden`)) === false);
+    expect('query persisted', (await evaluate(`document.querySelector('#req-body').value`)).includes('query Me'));
+
+    // Send it at the app's own public login endpoint. It rejects the body with
+    // "the login password must be sent encrypted", a message only reachable once
+    // the body parsed as a JSON object — so the 400 proves the query and
+    // variables were composed into an envelope instead of being posted raw (a
+    // raw query string would come back as "invalid JSON").
+    await evaluate(`document.querySelector('#req-url').value = ${JSON.stringify(BASE + '/api/auth/login')};
+      document.querySelector('#btn-send').click(); true`);
+    await waitFor('result panel', `!!document.querySelector('#result .result')`, 10000);
+    const result = await evaluate(`document.querySelector('#result').textContent`);
+    expect('the envelope reached the target as JSON', /sent encrypted/.test(result), result.slice(0, 200));
+    return 'variables panel + composed GraphQL envelope';
+  });
+
   await step('HISTORY: lists the execution redacted, with a detail view', async () => {
     await evaluate(clickNav('history'));
     await waitFor('history rows', `document.querySelectorAll('#content tr').length > 1`);
     const text = await evaluate('document.body.innerText');
     expect('secret never in the history view', !text.includes(SECRET_VALUE));
     expect('masked url shown', text.includes('***'));
-    await evaluate(`[...document.querySelectorAll('#content button')].find(b => b.textContent.trim() === 'View').click(); true`);
+    // Open the row that actually carried a secret: later sends in this walkthrough
+    // have nothing to mask, so "the first View button" is not stable.
+    await evaluate(`(() => {
+      const row = [...document.querySelectorAll('#content tr')].find(tr => tr.textContent.includes('***'));
+      [...row.querySelectorAll('button')].find(b => b.textContent.trim() === 'View').click();
+    })(); true`);
     await waitFor('history detail', `document.querySelector('#hist-detail').textContent.trim().length > 0`);
     const detail = await evaluate(`document.querySelector('#hist-detail').textContent`);
     expect('detail redacted', !detail.includes(SECRET_VALUE) && detail.includes('***'));
     return 'detail rendered';
+  });
+
+  await step('DELETE: a saved request can be removed from the editor', async () => {
+    await evaluate(clickNav('editor'));
+    await waitFor('editor', `!!document.querySelector('#req-url')`);
+    await evaluate(`[...document.querySelectorAll('#tree .node')]
+      .find(n => n.textContent.includes('ui smoke request')).click(); true`);
+    await waitFor('request loaded', `document.querySelector('#req-name').value === 'ui smoke request'`);
+    expect('admin sees the delete button', !!(await evaluate(`!!document.querySelector('#btn-del-req')`)));
+
+    await evaluate(`document.querySelector('#btn-del-req').click(); true`);
+    await waitFor('delete dialog', dialogOpen);
+    await evaluate(clickDialogOk);
+    await waitFor('gone from the tree', `!document.querySelector('#tree').textContent.includes('ui smoke request')`, 8000);
+    const name = await evaluate(`document.querySelector('#req-name') ? document.querySelector('#req-name').value : ''`);
+    expect('editor left the deleted request', name !== 'ui smoke request', 'name=' + name);
+    return 'deleted through the confirm dialog';
   });
 
   await step('SETTINGS: loads, saves, persists and rejects bad input', async () => {
@@ -282,6 +400,68 @@ async function main() {
     return 'max_history=50; ' + msg.trim();
   });
 
+  await step('PROXY: setting is validated and the per-request flag works', async () => {
+    await evaluate(clickNav('settings'));
+    await waitFor('settings form', `!!document.querySelector('#set-proxy')`);
+
+    // socks5 is not implemented yet: the server refuses it and says why.
+    await evaluate(`document.querySelector('#set-proxy').value = 'socks5://10.0.0.9:1080';
+      ${btnByText('#content', 'Save')}.click(); true`);
+    await waitFor('proxy rejected', `/failed/.test(document.querySelector('#set-status').textContent)`, 8000);
+    const rejected = await evaluate(`document.querySelector('#set-status').textContent`);
+    expect('the refusal mentions proxy_url', /proxy_url/.test(rejected), rejected);
+
+    await evaluate(`document.querySelector('#set-proxy').value = 'http://127.0.0.1:9';
+      ${btnByText('#content', 'Save')}.click(); true`);
+    await waitFor('proxy saved', `document.querySelector('#set-status').textContent === 'saved'`);
+
+    // The per-request box is stored, not just remembered in the open editor.
+    await evaluate(clickNav('editor'));
+    await waitFor('editor', `!!document.querySelector('#req-url')`);
+    await evaluate(`document.querySelector('#req-name').value = 'proxied request';
+      document.querySelector('#req-url').value = ${JSON.stringify(BASE + '/?via=proxy')};
+      document.querySelector('#req-proxy').checked = true;
+      document.querySelector('#btn-save').click(); true`);
+    await waitFor('saved', `document.querySelector('#send-status').textContent.startsWith('saved #')`);
+    await evaluate(`[...document.querySelectorAll('#tree .node')]
+      .find(n => n.textContent.includes('ui smoke request') || n.textContent.includes('proxied request')).click(); true`);
+    await waitFor('reloaded into the editor', `document.querySelector('#req-name').value !== ''`);
+    await evaluate(`[...document.querySelectorAll('#tree .node')]
+      .find(n => n.textContent.includes('proxied request')).click(); true`);
+    await waitFor('proxied request loaded', `document.querySelector('#req-name').value === 'proxied request'`);
+    expect('use proxy was persisted', (await evaluate(`document.querySelector('#req-proxy').checked`)) === true);
+
+    // Nothing listens on that proxy: the send must fail at the proxy instead of
+    // quietly reaching the app directly (which would answer 200).
+    await evaluate(`document.querySelector('#btn-send').click(); true`);
+    await waitFor('send finished', `/^(error|saved)/.test(document.querySelector('#send-status').textContent)`, 10000);
+    const status = await evaluate(`document.querySelector('#send-status').textContent`);
+    expect('the proxied send did not go direct', /^error/.test(status), status);
+
+    // With the setting cleared, the same request must say so instead of falling
+    // back to a direct send that would silently succeed.
+    await evaluate(clickNav('settings'));
+    await waitFor('settings form again', `!!document.querySelector('#set-proxy')`);
+    await evaluate(`document.querySelector('#set-proxy').value = '';
+      ${btnByText('#content', 'Save')}.click(); true`);
+    await waitFor('proxy cleared', `document.querySelector('#set-status').textContent === 'saved'`);
+    await evaluate(clickNav('editor'));
+    await waitFor('editor again', `!!document.querySelector('#btn-send')`);
+    await evaluate(`document.querySelector('#btn-send').click(); true`);
+    await waitFor('second send finished', `/^(error|saved)/.test(document.querySelector('#send-status').textContent)`, 10000);
+    const orphan = await evaluate(`document.querySelector('#send-status').textContent`);
+    expect('missing proxy is reported, not ignored', /no proxy_url is configured/.test(orphan), orphan);
+
+    // Untick and save: the request goes back to direct, which is where the rest
+    // of the walkthrough expects it.
+    await evaluate(`document.querySelector('#req-proxy').checked = false;
+      document.querySelector('#btn-save').click(); true`);
+    await waitFor('saved as direct', `document.querySelector('#send-status').textContent.startsWith('saved #')`);
+    await evaluate(`document.querySelector('#btn-send').click(); true`);
+    await waitFor('direct send back to 200', `!!document.querySelector('#result .result')`, 10000);
+    return rejected.trim().slice(0, 46) + ' — proxy routing verified';
+  });
+
   await step('ENVIRONMENTS: create, set vars, activate and use via {{VAR}}', async () => {
     await evaluate(clickNav('environments'));
     await waitFor('environments view', `!!document.querySelector('#new-env-name')`);
@@ -298,12 +478,14 @@ async function main() {
     await waitFor('env var row', `document.querySelectorAll('#env-vars-${envId} .kvrow').length > 0`);
     await evaluate(`(() => { const r = document.querySelector('#env-vars-${envId} .kvrow');
       r.querySelector('.k').value = 'host';
-      r.querySelector('.v').value = '127.0.0.1:5681'; })(); true`);
+      r.querySelector('.v').value = ${JSON.stringify(HOST)}; })(); true`);
+    await evaluate(clearFlash);
     await evaluate(`${btnByText('#content', 'Save vars')}.click(); true`);
-    await waitFor('vars saved', `window.__alerts.some(a => a.includes('saved'))`, 6000);
+    await waitFor('vars saved', `document.querySelector('#flash').textContent.includes('saved')`, 6000);
 
+    await evaluate(clearFlash);
     await evaluate(`${btnByText('#content', 'Set active user')}.click(); true`);
-    await waitFor('env activated', `window.__alerts.some(a => a.includes('active'))`, 6000);
+    await waitFor('env activated', `document.querySelector('#flash').textContent.includes('active')`, 6000);
 
     await evaluate(clickNav('editor'));
     await waitFor('editor back', `!!document.querySelector('#req-url')`);
@@ -333,9 +515,13 @@ async function main() {
     await waitFor('user disabled', `(${row}).textContent.includes('off')`);
 
     await evaluate(`[...(${row}).querySelectorAll('button')].find(b => b.textContent.trim() === 'Reset password').click(); true`);
-    await waitFor('password prompted', `window.__prompts.length > 0`, 6000);
-    const prompted = await evaluate(`window.__prompts[window.__prompts.length - 1].def`);
+    await waitFor('one-time password dialog', dialogOpen, 6000);
+    const prompted = await evaluate(`document.querySelector('#dialog-input').value`);
     expect('one-time password handed to the admin', typeof prompted === 'string' && prompted.length >= 8, 'pw=' + prompted);
+    expect('the password field is read-only', (await evaluate(`document.querySelector('#dialog-input').readOnly`)) === true);
+    testerPassword = prompted;
+    await evaluate(clickDialogOk);
+    await waitFor('dialog closed', dialogClosed);
 
     await evaluate(`(${row}).querySelector('button.ghost').click(); true`);
     await waitFor('user enabled', `(${row}).textContent.includes('on')`);
@@ -344,9 +530,15 @@ async function main() {
 
   await step('ERROR FEEDBACK: a rejected action is reported, not swallowed', async () => {
     await evaluate(clickNav('users'));
-    await waitFor('users view', `document.querySelector('#content').textContent.includes('admin')`);
+    // Wait for the view itself, not for its text: the response panel of the
+    // previous step renders the app's own HTML, which also contains "admin".
+    await waitFor('users view', `!!document.querySelector('#new-user-name')`);
     // Disabling your own account is refused by the server.
-    const ownRow = `[...document.querySelectorAll('#content tr')].find(tr => /(^|\s)admin(\s|$)/.test(tr.cells[1].textContent))`;
+    // Doubled backslashes: this runs inside a template literal, where a single
+    // \s would be eaten by the string parser before the browser sees the regex.
+    const ownRow = `[...document.querySelectorAll('#content tr')].find(tr => tr.cells[1] && /(^|\\s)admin(\\s|$)/.test(tr.cells[1].textContent))`;
+    await waitFor('admin row', `!!(${ownRow})`);
+    await evaluate(clearFlash);
     await evaluate(`(${ownRow}).querySelector('button.ghost').click(); true`);
     await waitFor('flash message', `document.querySelector('#flash').textContent.length > 0`, 6000);
     const msg = await evaluate(`document.querySelector('#flash').textContent`);
@@ -358,7 +550,7 @@ async function main() {
     await evaluate(`${btnByText('header', 'Log out')}.click(); true`);
     await waitFor('login view back', `${cssVisible('#login-view')} === 'visible'`, 6000);
     signedIn = false;
-    const who = await signIn('ui-tester', 'pw123456');
+    const who = await signIn('ui-tester', testerPassword);
     const displays = await evaluate(`[...document.querySelectorAll('.admin-only')].map(b => getComputedStyle(b).display)`);
     expect('admin-only nav hidden', displays.every((d) => d === 'none'), JSON.stringify(displays));
 
@@ -377,11 +569,23 @@ async function main() {
     }
     await signIn('admin', ADMIN_PW);
     await evaluate(clickNav('users'));
-    await waitFor('users view', `document.querySelector('#content').textContent.includes('ui-tester')`);
+    await waitFor('users view', `!!document.querySelector('#new-user-name')`);
     const row = `[...document.querySelectorAll('#content tr')].find(tr => tr.textContent.includes('ui-tester'))`;
+    await waitFor('ui-tester row', `!!(${row})`);
     await evaluate(`${row}.querySelector('button.danger').click(); true`);
+    await waitFor('delete dialog', dialogOpen);
+    await evaluate(clickDialogOk);
     await waitFor('user gone', `!document.querySelector('#content').textContent.includes('ui-tester')`, 8000);
     return 'ui-tester removed';
+  }, false);
+
+  // The stubs installed at load time would record any native dialog; if the
+  // migration is complete they stay empty for the whole walkthrough.
+  await step('DIALOGS: no fallback to a native alert/confirm/prompt', async () => {
+    const raw = await evaluate(`JSON.stringify({ alerts: window.__alerts, prompts: window.__prompts })`);
+    const n = JSON.parse(raw);
+    expect('no native dialogs used', n.alerts.length === 0 && n.prompts.length === 0, raw);
+    return 'all feedback rendered in-page';
   }, false);
 
   const pageErrs = await evaluate('window.__errs');
@@ -391,9 +595,13 @@ async function main() {
   const exceptions = client.events
     .filter((e) => e.method === 'Runtime.exceptionThrown')
     .map((e) => 'exception: ' + e.params.exceptionDetails.text);
-  const allErrs = [...new Set([...pageErrs, ...consoleErrs, ...exceptions])].filter(
-    (e) => !/status of 401/.test(e), // the expected "no session yet" probe
-  );
+  // The walkthrough deliberately triggers rejected calls: 401 for the "no session
+  // yet" probe, 400 for a bad setting (timeout, socks5 proxy) and for an
+  // unresolved placeholder, 502 for the send aimed at a dead proxy. Chrome logs
+  // every non-2xx fetch as "Failed to load resource"; those are expected, anything
+  // else (real exceptions, page errors) is not.
+  const expected = (e) => /Failed to load resource/.test(e) && /status of (400|401|502)/.test(e);
+  const allErrs = [...new Set([...pageErrs, ...consoleErrs, ...exceptions])].filter((e) => !expected(e));
 
   console.log('\n================ summary ================');
   const failed = results.filter((r) => !r.ok);
