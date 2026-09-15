@@ -178,6 +178,34 @@ func TestGraphQLBodyPanelIsWired(t *testing.T) {
 	}
 }
 
+// TestRealtimePanelsAreWired pins the WS/SSE half of the top-level type tabs:
+// the HTTP/WS/SSE switcher, the server-relayed connect calls and the log that
+// both panels render into. A missing piece silently leaves realtime dead while
+// HTTP keeps working.
+func TestRealtimePanelsAreWired(t *testing.T) {
+	js := readAsset(t, assets(t), "app.js")
+
+	if !strings.Contains(js, "setProto(p)") || !strings.Contains(js, "'http', 'ws', 'sse'") {
+		t.Error("the editor must offer HTTP/WebSocket/SSE top-level tabs via setProto")
+	}
+	if !strings.Contains(js, "renderRealtimeEditor") {
+		t.Error("ws/sse must render a dedicated realtime editor, not the HTTP form")
+	}
+	if !strings.Contains(js, "/realtime/connect") || !strings.Contains(js, "/api/realtime/ws") || !strings.Contains(js, "/api/realtime/sse") {
+		t.Error("realtime must mint a ticket and stream through /api/realtime/ws|sse")
+	}
+	if !strings.Contains(js, `id="rt-log"`) || !strings.Contains(js, "rtSendWS") || !strings.Contains(js, "rtConnectSSE") {
+		t.Error("the realtime panel must render #rt-log with WS send and SSE connect")
+	}
+	if !strings.Contains(js, "protocol: state.proto") {
+		t.Error("save must persist the protocol discriminator")
+	}
+	css := readAsset(t, assets(t), "app.css")
+	if !strings.Contains(css, ".logline") {
+		t.Error("app.css must style the realtime log")
+	}
+}
+
 // TestDeleteRequestIsAdminGatedInTheUI checks the editor half of the admin-only
 // delete: the button must be rendered from the role (content rendered after
 // startApp() never receives the CSS/JS .admin-only pass), it must confirm first,
@@ -199,6 +227,29 @@ func TestDeleteRequestIsAdminGatedInTheUI(t *testing.T) {
 	}
 }
 
+// TestRequestDuplicateAndDangerStyle pins two editor details: the Duplicate
+// button (a copy must POST the current content as a new request, never PUT
+// over the original) and the danger outline (transparent borders made Delete
+// look like plain text).
+func TestRequestDuplicateAndDangerStyle(t *testing.T) {
+	f := assets(t)
+	js := readAsset(t, f, "app.js")
+	css := readAsset(t, f, "app.css")
+
+	if !strings.Contains(js, `id="btn-dup"`) || !strings.Contains(js, "duplicateRequest()") {
+		t.Error("the request editor must offer a Duplicate button calling duplicateRequest()")
+	}
+	if !strings.Contains(js, "api('/requests', { method: 'POST', body: payload })") {
+		t.Error("duplicateRequest must POST a new request instead of updating in place")
+	}
+	if !strings.Contains(js, "(copy)") {
+		t.Error("a duplicated request should be renamed with a (copy) suffix")
+	}
+	if strings.Contains(css, "button.danger { color: var(--err); border-color: transparent;") {
+		t.Error("button.danger must keep a visible border, transparent makes Delete look like plain text")
+	}
+}
+
 // TestLoginShellIdsExist checks the elements the wiring code binds to. A
 // renamed id silently leaves the UI dead: no listener is attached and the
 // browser falls back to a plain form submit.
@@ -214,10 +265,32 @@ func TestLoginShellIdsExist(t *testing.T) {
 	for _, id := range []string{
 		"login-view", "login-form", "login-user", "login-pass", "login-err",
 		"app-view", "who", "flash", "btn-logout", "main-nav", "tree", "content",
+		"user-menu-btn", "user-menu",
 	} {
 		if !ids[id] {
 			t.Errorf("index.html has no id=%q, which app.js binds to", id)
 		}
+	}
+
+	// Admin pages live in the header user menu, not the left nav: one dropdown
+	// for account + admin. A nav button for them means the merge regressed.
+	for _, view := range []string{"secrets", "users", "settings"} {
+		if strings.Contains(html, `<nav id="main-nav"`) {
+			nav := html[strings.Index(html, `<nav id="main-nav"`):]
+			if end := strings.Index(nav, "</nav>"); end >= 0 {
+				nav = nav[:end]
+				if strings.Contains(nav, `data-view="`+view+`"`) {
+					t.Errorf("left nav still links data-view=%q; admin pages belong in #user-menu", view)
+				}
+			}
+		}
+		if !strings.Contains(html, `id="user-menu"`) {
+			t.Errorf("index.html has no #user-menu dropdown")
+			break
+		}
+	}
+	if !strings.Contains(js, "toggleUserMenu") || !strings.Contains(js, "closeUserMenu") {
+		t.Error("app.js must wire the user menu dropdown open/close")
 	}
 
 	// The admin-only navigation must exist for the role filter to have targets.
@@ -232,7 +305,7 @@ func TestLoginShellIdsExist(t *testing.T) {
 func TestAssetsAreRevalidated(t *testing.T) {
 	h := Handler()
 
-	for _, name := range []string{"/", "/app.js", "/app.css", "/loginenc.js"} {
+	for _, name := range []string{"/", "/app.js", "/app.css", "/loginenc.js", "/favicon.svg"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, name, nil))
 		if rec.Code != http.StatusOK {
@@ -262,6 +335,45 @@ func TestAssetsAreRevalidated(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/collections", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<title>PostLite</title>") {
 		t.Errorf("SPA fallback: got %d, body starts %q", rec.Code, firstLine(rec.Body.String()))
+	}
+}
+
+// TestFaviconIsSelfContained pins the site icon: it must exist (the shell
+// links it, and TestIndexReferencesOnlyEmbeddedAssets fails otherwise), be a
+// standalone SVG in brand colors, and load no external resources.
+func TestFaviconIsSelfContained(t *testing.T) {
+	f := assets(t)
+	html := readAsset(t, f, "index.html")
+	if !strings.Contains(html, `href="/favicon.svg"`) {
+		t.Fatal("index.html must link /favicon.svg as the site icon")
+	}
+	svg := readAsset(t, f, "favicon.svg")
+	trimmed := strings.TrimSpace(svg)
+	if !strings.HasPrefix(trimmed, "<svg") || !strings.HasSuffix(trimmed, "</svg>") {
+		t.Fatal("favicon.svg must be a complete <svg> document")
+	}
+	for _, color := range []string{"#4f8cff", "#7c5cff"} {
+		if !strings.Contains(svg, color) {
+			t.Errorf("favicon.svg should use the brand gradient color %s", color)
+		}
+	}
+	stripped := strings.ReplaceAll(svg, "xmlns=\"http://www.w3.org/2000/svg\"", "")
+	if strings.Contains(stripped, "http://") || strings.Contains(stripped, "https://") {
+		t.Error("favicon.svg must not reference external resources")
+	}
+}
+
+// TestTreeVerbIsCompact guards the Collections tree spacing: the method badge
+// must size to its content (the flex gap sets the spacing), not reserve a
+// fixed min-width that leaves a large gap before short verbs like GET.
+func TestTreeVerbIsCompact(t *testing.T) {
+	css := readAsset(t, assets(t), "app.css")
+
+	if strings.Contains(css, "min-width: 40px") {
+		t.Error(".verb must not reserve a fixed 40px min-width; short verbs leave a large gap before the name")
+	}
+	if !strings.Contains(css, ".verb {") {
+		t.Error("app.css must still style the tree method badge (.verb)")
 	}
 }
 

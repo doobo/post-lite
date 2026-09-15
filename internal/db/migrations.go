@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-var migrations = []string{migrationV1, migrationV2, migrationV3}
+var migrations = []string{migrationV1, migrationV2, migrationV3, migrationV4}
 
 const migrationV1 = `
 CREATE TABLE users (
@@ -103,6 +103,15 @@ ALTER TABLE requests ADD COLUMN use_proxy INTEGER NOT NULL DEFAULT 0;
 // (what a plain editor would show) and the variables stay JSON-checked on send.
 const migrationV3 = `
 ALTER TABLE requests ADD COLUMN variables TEXT;
+`
+
+// migrationV4 adds the realtime protocol discriminator. HTTP stays the
+// default; ws/sse rows reuse method=GET (so the V1 method CHECK keeps
+// holding) and carry their extra options in the same columns the editor
+// already has (body = initial message / SSE event filter lives in variables).
+// Socket.IO / MQTT will extend this column later, no new table needed.
+const migrationV4 = `
+ALTER TABLE requests ADD COLUMN protocol TEXT NOT NULL DEFAULT 'http';
 `
 
 func Migrate(db *sql.DB) error {

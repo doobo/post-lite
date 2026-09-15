@@ -38,12 +38,17 @@ type Request struct {
 	FolderID     *int64 `json:"folder_id"`
 	OwnerID      *int64 `json:"owner_id"`
 	Name         string `json:"name"`
-	Method       string `json:"method"`
-	URL          string `json:"url"`
-	Headers      string `json:"headers"`
-	Query        string `json:"query"`
-	BodyType     string `json:"body_type"`
-	Body         string `json:"body"`
+	// Protocol is the realtime discriminator: http (default), ws, sse.
+	// Socket.IO / MQTT will extend this column later. HTTP rows keep the
+	// existing method/body_type semantics; ws/sse rows use method=GET and
+	// carry subprotocol / event filter in body/variables (see migrationV4).
+	Protocol string `json:"protocol"`
+	Method   string `json:"method"`
+	URL      string `json:"url"`
+	Headers  string `json:"headers"`
+	Query    string `json:"query"`
+	BodyType string `json:"body_type"`
+	Body     string `json:"body"`
 	// Variables is the GraphQL variables document; only used when BodyType is
 	// "graphql", and kept as text so the editor can show what the user typed.
 	Variables string    `json:"variables"`

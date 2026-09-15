@@ -187,8 +187,8 @@ button:disabled { opacity: .55; cursor: not-allowed; transform: none; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 button.primary:hover { background: var(--accent2); border-color: var(--accent2); }
 button.ghost { background: transparent; }
-button.danger { color: var(--err); border-color: transparent; background: transparent; }
-button.danger:hover { background: var(--err-soft); border-color: var(--err-soft); }
+button.danger { color: var(--err); border-color: var(--err); background: transparent; }
+button.danger:hover { background: var(--err-soft); border-color: var(--err); }
 button.ghost:hover { background: var(--panel3); }
 
 .card {
@@ -253,6 +253,29 @@ header {
 }
 .chip b { color: var(--text); font-weight: 600; }
 header .theme-select { padding: 4px 8px; font-size: 12.5px; }
+
+/* User menu: account + admin pages in one header dropdown. */
+.user-menu-wrap { position: relative; }
+.user-btn { cursor: pointer; font: inherit; }
+.user-btn .caret { font-size: 10px; opacity: .7; }
+.user-btn.active { border-color: var(--accent); color: var(--text); }
+.menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
+  min-width: 160px; padding: 5px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: 0 12px 32px var(--shadow-lg);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.menu[hidden] { display: none; }
+.menu button {
+  background: transparent; border: none; border-radius: 6px;
+  text-align: left; padding: 8px 10px; font-size: 13px; color: var(--text);
+  width: 100%;
+}
+.menu button:hover { background: var(--row-hover); }
+.menu button.active { color: var(--accent); }
+.menu button.danger { color: var(--err); }
+.menusep { height: 1px; background: var(--border); margin: 5px 4px; }
 
 /* Notifications live in the header so a button press always reports its outcome
    where the user is already looking. This replaces alert(), which blocks the
@@ -358,7 +381,6 @@ main { padding: 18px; overflow-x: auto; min-width: 0; }
 
 .verb {
   flex: none; font: 700 10px/1 var(--mono); letter-spacing: .04em;
-  min-width: 40px; text-align: left;
 }
 .verb.m-GET { color: var(--method-get-color); }
 .verb.m-POST { color: var(--method-post-color); }
@@ -494,6 +516,25 @@ td .muted { font-size: 12.5px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
 .col { display: flex; flex-direction: column; gap: 12px; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
+
+/* ---------- realtime log ---------- */
+.log {
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 380px; overflow: auto;
+  background: var(--panel2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 12px;
+}
+.logline { display: flex; gap: 10px; align-items: flex-start; font-size: 12.5px; }
+.logline .dir {
+  flex: none; min-width: 44px; text-align: center;
+  font: 600 10.5px/1.9 var(--mono); border-radius: 4px;
+  background: var(--panel); border: 1px solid var(--border); color: var(--muted);
+  text-transform: uppercase;
+}
+.logline.up .dir { color: var(--accent); border-color: var(--accent-soft); background: var(--accent-soft); }
+.logline.down .dir { color: var(--ok); border-color: var(--ok-soft); background: var(--ok-soft); }
+.logline.info .dir { color: var(--muted); }
+.logline pre { flex: 1; margin: 0; max-height: none; }
 
 details { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 12px; margin: 7px 0; }
 details[open] { border-color: var(--border2); }

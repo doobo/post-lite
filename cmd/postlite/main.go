@@ -210,6 +210,9 @@ func registerAPIRoutes(mux *http.ServeMux, s *httpapi.Server) {
 
 	// Execute + history.
 	mux.HandleFunc("POST /api/execute", s.Execute)
+	mux.HandleFunc("POST /api/realtime/connect", s.RealtimeConnect)
+	mux.HandleFunc("GET /api/realtime/ws", s.RealtimeWS)
+	mux.HandleFunc("GET /api/realtime/sse", s.RealtimeSSE)
 	mux.HandleFunc("GET /api/history", s.ListHistory)
 	mux.HandleFunc("GET /api/history/{id}", s.GetHistory)
 	mux.HandleFunc("DELETE /api/history/{id}", s.DeleteHistory)

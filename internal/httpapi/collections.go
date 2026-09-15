@@ -228,6 +228,7 @@ type expRequest struct {
 	ID        int64             `json:"id"`
 	FolderID  *int64            `json:"folder_id"`
 	Name      string            `json:"name"`
+	Protocol  string            `json:"protocol,omitempty"`
 	Method    string            `json:"method"`
 	URL       string            `json:"url"`
 	Headers   map[string]string `json:"headers"`
@@ -282,7 +283,7 @@ func (s *Server) exportCollection(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, rq := range requests {
 		er := expRequest{
-			ID: rq.ID, FolderID: rq.FolderID, Name: rq.Name, Method: rq.Method,
+			ID: rq.ID, FolderID: rq.FolderID, Name: rq.Name, Protocol: rq.Protocol, Method: rq.Method,
 			URL: rq.URL, BodyType: rq.BodyType, Body: rq.Body, Variables: rq.Variables,
 		}
 		if rq.Headers != "" {
@@ -369,6 +370,7 @@ func repositoryRequestPayload(rq expRequest, colID int64, oldToNew map[int64]int
 	var p repository.RequestPayload
 	p.CollectionID = colID
 	p.Name = rq.Name
+	p.Protocol = rq.Protocol
 	p.Method = rq.Method
 	p.URL = rq.URL
 	p.BodyType = rq.BodyType

@@ -112,7 +112,7 @@ async function signIn(username, password) {
   throw new Error('still on the login page after 8s' + (err ? ' — ' + err : ' (no message shown)'));
 }
 
-const clickNav = (view) => `document.querySelector('nav button[data-view="${view}"]').click(); true`;
+const clickNav = (view) => `document.querySelector('button[data-view="${view}"]').click(); true`;
 const btnByText = (root, text) =>
   `[...document.querySelectorAll(${JSON.stringify(root)} + ' button')].find(b => b.textContent.trim() === ${JSON.stringify(text)})`;
 const cssVisible = (sel) =>
@@ -515,7 +515,9 @@ async function main() {
     await waitFor('user disabled', `(${row}).textContent.includes('off')`);
 
     await evaluate(`[...(${row}).querySelectorAll('button')].find(b => b.textContent.trim() === 'Reset password').click(); true`);
-    await waitFor('one-time password dialog', dialogOpen, 6000);
+    await waitFor('manual password dialog', dialogOpen, 6000);
+    await evaluate(clickDialogOk); // leave empty for a random password
+    await waitFor('one-time password dialog', `document.querySelector('#dialog').hidden === false && document.querySelector('#dialog-input').readOnly === true`, 6000);
     const prompted = await evaluate(`document.querySelector('#dialog-input').value`);
     expect('one-time password handed to the admin', typeof prompted === 'string' && prompted.length >= 8, 'pw=' + prompted);
     expect('the password field is read-only', (await evaluate(`document.querySelector('#dialog-input').readOnly`)) === true);

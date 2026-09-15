@@ -20,6 +20,24 @@ var validBodyTypes = map[string]struct{}{
 	"none": {}, "json": {}, "raw": {}, "graphql": {},
 }
 
+// validProtocols is the realtime discriminator: http is the original sync
+// executor, ws/sse are server-relayed realtime (see DESIGN V0.2). Empty means
+// http for old clients. socketio/mqtt will extend this map later.
+var validProtocols = map[string]struct{}{
+	"http": {}, "ws": {}, "sse": {},
+}
+
+func checkProtocol(w http.ResponseWriter, protocol string) (string, bool) {
+	if protocol == "" {
+		return "http", true
+	}
+	if _, ok := validProtocols[protocol]; !ok {
+		fail(w, http.StatusBadRequest, "bad_request", "protocol must be one of http/ws/sse")
+		return "", false
+	}
+	return protocol, true
+}
+
 func checkBodyType(w http.ResponseWriter, bodyType string) bool {
 	if bodyType == "" {
 		return true
@@ -74,8 +92,19 @@ func (s *Server) createRequest(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &p) {
 		return
 	}
+	proto, okp := checkProtocol(w, p.Protocol)
+	if !okp {
+		return
+	}
+	p.Protocol = proto
 	if _, okm := validMethods[p.Method]; !okm {
 		fail(w, http.StatusBadRequest, "bad_request", "method must be one of GET/POST/PUT/PATCH/DELETE")
+		return
+	}
+	// Realtime rows reuse method=GET so the V1 method CHECK keeps holding;
+	// the wire scheme (ws/wss/http) lives in url.
+	if (proto == "ws" || proto == "sse") && p.Method != "GET" {
+		fail(w, http.StatusBadRequest, "bad_request", "ws/sse requests must use method GET")
 		return
 	}
 	if p.Name == "" {
@@ -171,6 +200,15 @@ func (s *Server) updateRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, okm := validMethods[p.Method]; !okm {
 		fail(w, http.StatusBadRequest, "bad_request", "method must be one of GET/POST/PUT/PATCH/DELETE")
+		return
+	}
+	proto, okp := checkProtocol(w, p.Protocol)
+	if !okp {
+		return
+	}
+	p.Protocol = proto
+	if (proto == "ws" || proto == "sse") && p.Method != "GET" {
+		fail(w, http.StatusBadRequest, "bad_request", "ws/sse requests must use method GET")
 		return
 	}
 	if !checkBodyType(w, p.BodyType) {

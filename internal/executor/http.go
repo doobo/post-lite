@@ -115,6 +115,10 @@ func (e *Executor) transportFor(proxyURL string) (*http.Transport, error) {
 // whitelist holds the allowed CIDRs.
 type whitelist []net.IPNet
 
+// Whitelist is the exported alias so httpapi can carry the parsed policy
+// for realtime tickets without re-parsing on upgrade.
+type Whitelist = whitelist
+
 func (wl whitelist) contains(ip net.IP) bool {
 	for _, c := range wl {
 		if c.Contains(ip) {
@@ -157,6 +161,48 @@ func parseHTTPTarget(raw string) (*url.URL, error) {
 	return u, nil
 }
 
+// parseRealtimeTarget is the WS/SSE twin of parseHTTPTarget: ws/wss are
+// accepted and normalized to http/https for the DNS whitelist check, so the
+// same CIDR policy guards realtime without a second code path. SSE itself
+// travels over http/https and needs no mapping.
+func parseRealtimeTarget(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: bad url %q", ErrSSRF, raw)
+	}
+	switch u.Scheme {
+	case "ws":
+		u.Scheme = "http"
+	case "wss":
+		u.Scheme = "https"
+	case "http", "https":
+	default:
+		return nil, fmt.Errorf("%w: scheme %q not allowed (want ws/wss/http/https)", ErrSSRF, u.Scheme)
+	}
+	if u.Hostname() == "" {
+		return nil, fmt.Errorf("%w: missing host", ErrSSRF)
+	}
+	return u, nil
+}
+
+// normalizeRealtimeURL maps ws->http and wss->https so checkTarget can reuse
+// the HTTP DNS logic verbatim.
+func normalizeRealtimeURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	if u.Scheme == "ws" {
+		u.Scheme = "http"
+		return u.String()
+	}
+	if u.Scheme == "wss" {
+		u.Scheme = "https"
+		return u.String()
+	}
+	return raw
+}
+
 // checkTargetFor is the policy actually applied to a request: with a proxy the
 // target only has to be a well-formed http(s) URL, because the *proxy* resolves
 // and reaches it — a local DNS lookup would refuse exactly the hosts a proxy
@@ -172,6 +218,24 @@ func checkTargetFor(ctx context.Context, raw string, wl whitelist, proxyURL stri
 		return err
 	}
 	return checkTarget(ctx, raw, wl)
+}
+
+// CheckRealtimeTarget enforces the CIDR whitelist on a ws/wss URL by mapping
+// it to http/https first. Proxy is unsupported in V1, so direct policy holds.
+func CheckRealtimeTarget(raw string, wl Whitelist) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return checkTarget(ctx, normalizeRealtimeURL(raw), wl)
+}
+
+// ParseWhitelistCheck enforces the whitelist on an http/https URL (SSE path).
+func ParseWhitelistCheck(raw string, wl Whitelist) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := checkTarget(ctx, raw, wl); err != nil {
+		return "", err
+	}
+	return raw, nil
 }
 
 // checkTarget enforces the SSRF policy for a direct connection: resolve the host

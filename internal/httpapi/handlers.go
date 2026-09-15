@@ -46,10 +46,13 @@ func (s *Server) UpdateSecret(w http.ResponseWriter, r *http.Request) { s.update
 func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request)  { s.listSecrets(w, r) }
 func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) { s.deleteSecret(w, r) }
 
-func (s *Server) Execute(w http.ResponseWriter, r *http.Request)       { s.execute(w, r) }
-func (s *Server) ListHistory(w http.ResponseWriter, r *http.Request)   { s.listHistory(w, r) }
-func (s *Server) GetHistory(w http.ResponseWriter, r *http.Request)    { s.getHistory(w, r) }
-func (s *Server) DeleteHistory(w http.ResponseWriter, r *http.Request) { s.deleteHistory(w, r) }
+func (s *Server) Execute(w http.ResponseWriter, r *http.Request)         { s.execute(w, r) }
+func (s *Server) RealtimeConnect(w http.ResponseWriter, r *http.Request) { s.realtimeConnect(w, r) }
+func (s *Server) RealtimeWS(w http.ResponseWriter, r *http.Request)      { s.realtimeWS(w, r) }
+func (s *Server) RealtimeSSE(w http.ResponseWriter, r *http.Request)     { s.realtimeSSE(w, r) }
+func (s *Server) ListHistory(w http.ResponseWriter, r *http.Request)     { s.listHistory(w, r) }
+func (s *Server) GetHistory(w http.ResponseWriter, r *http.Request)      { s.getHistory(w, r) }
+func (s *Server) DeleteHistory(w http.ResponseWriter, r *http.Request)   { s.deleteHistory(w, r) }
 
 func (s *Server) GetSettings(w http.ResponseWriter, r *http.Request) { s.getSettings(w, r) }
 func (s *Server) PutSettings(w http.ResponseWriter, r *http.Request) { s.putSettings(w, r) }

@@ -12,6 +12,8 @@ const state = {
   results: null,
   reqTab: 'headers',  // active tab of the request editor
   resTab: 'body',     // active tab of the response panel
+  proto: 'http',      // top-level type: http | ws | sse (hoppscotch-style realtime tabs)
+  rt: { ws: null, wsLog: [], sse: null, sseLog: [], status: '' },
 };
 
 const $ = (s, el) => (el || document).querySelector(s);
@@ -250,6 +252,9 @@ function setView(name) {
   if (!state.user) return;
   state.view = name;
   $$('#main-nav button').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
+  $$('#user-menu button[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
+  const umb = $('#user-menu-btn');
+  if (umb) umb.classList.toggle('active', name === 'secrets' || name === 'users' || name === 'settings');
   const renderers = {
     collections: renderCollections,
     editor: renderEditor,
@@ -264,6 +269,23 @@ function setView(name) {
     return setView('editor');
   }
   fn().catch((e) => { $('#content').innerHTML = '<div class="card"><p class="err">' + esc(e.message) + '</p></div>'; });
+}
+
+// User menu dropdown (account + admin pages in one place).
+function toggleUserMenu() {
+  const menu = $('#user-menu');
+  const btn = $('#user-menu-btn');
+  if (!menu || !btn) return;
+  menu.hidden = !menu.hidden;
+  btn.setAttribute('aria-expanded', String(!menu.hidden));
+}
+
+function closeUserMenu() {
+  const menu = $('#user-menu');
+  const btn = $('#user-menu-btn');
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  if (btn) btn.setAttribute('aria-expanded', 'false');
 }
 
 async function reloadAll() {
@@ -308,11 +330,14 @@ function renderTree() {
   }
   const reqRow = (r, depth) => {
     const active = state.current && state.current.id === r.id;
+    const proto = r.protocol || 'http';
+    const badge = proto === 'http' ? '' : ' <span class="badge on">' + esc(proto.toUpperCase()) + '</span>';
+    const verb = proto === 'http' ? esc(r.method) : esc(proto.toUpperCase());
     return '<div class="node req' + (active ? ' active' : '') + '" data-req="' + r.id + '"'
       + ' style="padding-left:' + (10 + depth * 13) + 'px" onclick="loadRequest(' + r.id + ')"'
       + ' title="' + escAttr(r.name) + '">'
-      + '<span class="verb ' + methodClass(r.method) + '">' + esc(r.method) + '</span>'
-      + '<span class="name">' + esc(r.name) + '</span></div>';
+      + '<span class="verb ' + methodClass(r.method) + '">' + verb + '</span>'
+      + '<span class="name">' + esc(r.name) + '</span>' + badge + '</div>';
   };
   let html = '<h3>Collections</h3>';
   for (const c of state.collections) {
@@ -534,8 +559,9 @@ async function newRequest(collId) {
     collection_id: collId || (state.collections[0] ? state.collections[0].id : null),
     folder_id: null,
     name: 'Untitled',
+    protocol: state.proto || 'http',
     method: 'GET',
-    url: 'http://',
+    url: state.proto === 'ws' ? 'ws://' : 'http://',
     headers: {},
     query: [],
     body_type: 'none',
@@ -549,11 +575,13 @@ async function newRequest(collId) {
 
 async function loadRequest(id) {
   const rq = await api('/requests/' + id);
+  state.proto = rq.protocol || 'http';
   state.current = {
     id: rq.id,
     collection_id: rq.collection_id,
     folder_id: rq.folder_id,
     name: rq.name,
+    protocol: rq.protocol || 'http',
     method: rq.method,
     url: rq.url,
     headers: parseHeaders(rq.headers),
@@ -568,6 +596,19 @@ async function loadRequest(id) {
   renderTree();   // highlight the row that is now open
 }
 
+// setProto switches the top-level request type (HTTP | WebSocket | SSE),
+// like hoppscotch's /realtime/* tabs. Realtime panels are server-relayed:
+// the browser talks to postlite, postlite dials upstream, so SSRF and
+// secret redaction keep applying.
+function setProto(p) {
+  if (state.proto === p) return;
+  rtDisconnect(false);
+  state.proto = p;
+  state.results = null;
+  if (state.current) state.current.protocol = p;
+  renderEditor();
+}
+
 async function renderEditor() {
   if (!state.current) {
     if (state.collections.length === 0) {
@@ -577,6 +618,10 @@ async function renderEditor() {
       return;
     }
     await newRequest(state.collections[0].id);
+    return;
+  }
+  if (state.proto === 'ws' || state.proto === 'sse') {
+    renderRealtimeEditor();
     return;
   }
   const c = state.current;
@@ -590,12 +635,17 @@ async function renderEditor() {
 
   $('#content').innerHTML =
     '<div class="card">'
+    + '<div class="tabs" role="tablist" aria-label="Request type">'
+    + ['http', 'ws', 'sse'].map((p) => '<button class="tab' + (state.proto === p ? ' active' : '') + '"'
+      + ' onclick="setProto(\'' + p + '\')">' + (p === 'http' ? 'HTTP' : p === 'ws' ? 'WebSocket' : 'SSE') + '</button>').join('')
+    + '</div>'
     + '<div class="row">'
     + '<select id="req-method" class="' + methodClass(c.method) + '" onchange="updateMethodColor()">'
     + ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => '<option' + (c.method === m ? ' selected' : '') + '>' + m + '</option>').join('')
     + '</select>'
     + '<input id="req-url" class="url" placeholder="http://host:5680/path — {{VAR}} / {{sec.NAME}} supported" value="' + escAttr(c.url) + '">'
     + '<button id="btn-save" class="ghost" onclick="saveRequest()" title="Save request (Ctrl+S)">Save</button>'
+    + '<button id="btn-dup" class="ghost" onclick="duplicateRequest()" title="Save a copy as a new request">Duplicate</button>'
     + '<button id="btn-send" class="primary" onclick="sendRequest()" title="Send request (Ctrl+Enter)">Send</button>'
     // Deleting is admin-only (the server enforces it with requireAdmin), so the
     // button is rendered from the role rather than hidden with CSS after render.
@@ -675,7 +725,190 @@ function onCollChange() {
   $('#req-folder').innerHTML = folderOptions(Number($('#req-coll').value), null);
 }
 
+/* ---------- realtime (WS/SSE, server-relayed) ---------- */
+
+// The realtime editor mirrors hoppscotch's /realtime/* split: one top-level
+// type at a time, an endpoint + headers, a type-specific field (subprotocols
+// for WS, event filter for SSE) and a live log. Connect mints a one-time
+// ticket (POST /api/realtime/connect) so the resolved URL never lands in the
+// address bar; the stream itself is GET /api/realtime/ws|sse?ticket=...
+function renderRealtimeEditor() {
+  const c = state.current;
+  const isWS = state.proto === 'ws';
+  const gEnvs = state.envs.filter((e) => e.scope === 'global');
+  const uEnvs = state.envs.filter((e) => e.scope === 'user');
+  const log = isWS ? state.rt.wsLog : state.rt.sseLog;
+  const logHtml = (log || []).map((e) =>
+    '<div class="logline ' + e.dir + '"><span class="dir">' + esc(e.dir) + '</span><pre>' + esc(e.text) + '</pre></div>'
+  ).join('') || '<div class="muted">No messages yet. Connect, then send (WS) or watch events (SSE).</div>';
+  $('#content').innerHTML =
+    '<div class="card">'
+    + '<div class="tabs" role="tablist" aria-label="Request type">'
+    + ['http', 'ws', 'sse'].map((p) => '<button class="tab' + (state.proto === p ? ' active' : '') + '"'
+      + ' onclick="setProto(\'' + p + '\')">' + (p === 'http' ? 'HTTP' : p === 'ws' ? 'WebSocket' : 'SSE') + '</button>').join('')
+    + '</div>'
+    + '<div class="row">'
+    + '<span class="pill">' + (isWS ? 'WS' : 'SSE') + '</span>'
+    + '<input id="rt-url" class="url" placeholder="' + (isWS ? 'ws://host:port/path' : 'http://host:port/events') + ' — {{VAR}} / {{sec.NAME}} supported" value="' + escAttr(c.url) + '">'
+    + '<button id="btn-rt-save" class="ghost" onclick="saveRequest()" title="Save realtime request">Save</button>'
+    + '<button id="btn-dup" class="ghost" onclick="duplicateRequest()" title="Save a copy as a new request">Duplicate</button>'
+    + (isWS
+      ? '<button id="btn-rt-conn" class="primary" onclick="rtConnectWS()">Connect</button>'
+        + '<button id="btn-rt-disc" class="ghost" onclick="rtDisconnect(true)">Disconnect</button>'
+      : '<button id="btn-rt-conn" class="primary" onclick="rtConnectSSE()">Connect</button>'
+        + '<button id="btn-rt-disc" class="ghost" onclick="rtDisconnect(true)">Disconnect</button>')
+    + (c.id && state.user && state.user.role === 'admin'
+      ? '<button id="btn-del-req" class="danger admin-only" onclick="deleteRequest()">Delete</button>'
+      : '')
+    + '</div>'
+    + '<div class="row meta">'
+    + '<label>Name <input id="req-name" style="max-width:190px" value="' + escAttr(c.name) + '"></label>'
+    + '<label>Collection <select id="req-coll" onchange="onCollChange()">' + collOptions(c.collection_id) + '</select></label>'
+    + '<label>Folder <select id="req-folder">' + folderOptions(c.collection_id, c.folder_id) + '</select></label>'
+    + '<label>Global env <select id="req-genv"><option value="">(active)</option>' + gEnvs.map((e) => '<option value="' + e.id + '">' + esc(e.name) + '</option>').join('') + '</select></label>'
+    + '<label>User env <select id="req-uenv"><option value="">(active)</option>' + uEnvs.map((e) => '<option value="' + e.id + '">' + esc(e.name) + '</option>').join('') + '</select></label>'
+    + '<span id="rt-status" class="muted">' + esc(state.rt.status || '') + '</span>'
+    + '</div>'
+    + (isWS
+      ? '<div class="row"><label style="flex:1">Subprotocols (comma, optional) <input id="rt-proto" style="width:100%" placeholder="chat, json" value="' + escAttr(c.body || '') + '"></label></div>'
+      : '<div class="row"><label style="flex:1">Event filter (optional, empty = all) <input id="rt-event" style="width:100%" placeholder="message" value="' + escAttr(c.variables || '') + '"></label></div>')
+    + '<div class="tabs">' + '<button class="tab' + (state.reqTab === 'headers' ? ' active' : '') + '" data-group="req" data-tab="headers" onclick="setReqTab(\'headers\')">Headers<span class="count" data-count="headers"></span></button>'
+    + '<button class="tab' + (state.reqTab === 'params' ? ' active' : '') + '" data-group="req" data-tab="params" onclick="setReqTab(\'params\')">Params<span class="count" data-count="params"></span></button>'
+    + '<button class="tab' + (state.reqTab === 'vars' ? ' active' : '') + '" data-group="req" data-tab="vars" onclick="setReqTab(\'vars\')">Vars<span class="count" data-count="vars"></span></button></div>'
+    + '<div class="tabpanel" data-group="req" data-panel="headers"' + (state.reqTab === 'headers' ? '' : ' hidden') + '><div id="req-headers">' + kvRows(objPairs(c.headers), 'Header', 'value') + '</div></div>'
+    + '<div class="tabpanel" data-group="req" data-panel="params"' + (state.reqTab === 'params' ? '' : ' hidden') + '><div id="req-query">' + kvRows(c.query, 'key', 'value') + '</div></div>'
+    + '<div class="tabpanel" data-group="req" data-panel="vars"' + (state.reqTab === 'vars' ? '' : ' hidden') + '><div id="req-vars">' + kvRows([], 'name', 'value') + '</div>'
+    + '<p class="hint">Temporary variables win over environments and secrets, and are never stored.</p></div>'
+    + (isWS ? '<div class="row"><input id="rt-msg" class="url" placeholder=\'{"hello":"world"}\' onkeydown="if(event.key===\'Enter\')rtSendWS()">'
+      + '<button class="primary" onclick="rtSendWS()">Send</button></div>' : '')
+    + '<h3>Log</h3><div id="rt-log" class="log">' + logHtml + '</div>'
+    + '</div>';
+  updateTabCounts();
+}
+
+function rtCollectBase() {
+  const headers = {};
+  collectKV($('#req-headers')).forEach((p) => { headers[p.k] = p.v; });
+  const vars = {};
+  collectKV($('#req-vars')).forEach((p) => { vars[p.k] = p.v; });
+  const active = {};
+  if ($('#req-genv').value) active.global_env_id = Number($('#req-genv').value);
+  if ($('#req-uenv').value) active.user_env_id = Number($('#req-uenv').value);
+  return { headers: headers, query: collectKV($('#req-query')), vars: vars, active: active };
+}
+
+function rtPush(dir, text) {
+  const isWS = state.proto === 'ws';
+  const arr = isWS ? state.rt.wsLog : state.rt.sseLog;
+  arr.push({ dir: dir, text: text });
+  if (arr.length > 200) arr.splice(0, arr.length - 200);
+  const box = $('#rt-log');
+  if (box) {
+    box.innerHTML = arr.map((e) =>
+      '<div class="logline ' + e.dir + '"><span class="dir">' + esc(e.dir) + '</span><pre>' + esc(e.text) + '</pre></div>'
+    ).join('');
+    box.scrollTop = box.scrollHeight;
+  }
+}
+
+function rtSetStatus(s) {
+  state.rt.status = s;
+  const el = $('#rt-status');
+  if (el) el.textContent = s;
+}
+
+async function rtMintTicket(protocol, extra) {
+  const base = rtCollectBase();
+  const body = Object.assign({
+    protocol: protocol,
+    url: $('#rt-url').value,
+    headers: base.headers,
+    query: base.query,
+    vars: base.vars,
+    active_env: base.active,
+  }, extra || {});
+  const data = await api('/realtime/connect', { method: 'POST', body: body });
+  if (data.warnings && data.warnings.length) notify('unresolved: ' + data.warnings.join(', '), 'warn');
+  return data.ticket;
+}
+
+function rtWsURL(ticket) {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return proto + '//' + location.host + '/api/realtime/ws?ticket=' + encodeURIComponent(ticket);
+}
+
+async function rtConnectWS() {
+  rtDisconnect(false);
+  rtSetStatus('connecting…');
+  try {
+    const protos = $('#rt-proto').value.split(',').map((s) => s.trim()).filter(Boolean);
+    const ticket = await rtMintTicket('ws', { protocols: protos });
+    const sock = new WebSocket(rtWsURL(ticket));
+    state.rt.ws = sock;
+    sock.onopen = () => { rtSetStatus('connected'); rtPush('info', 'connected (server-relayed)'); };
+    sock.onmessage = (ev) => rtPush('down', String(ev.data));
+    sock.onerror = () => rtPush('info', 'socket error');
+    sock.onclose = () => { rtSetStatus('closed'); rtPush('info', 'disconnected'); if (state.rt.ws === sock) state.rt.ws = null; };
+  } catch (e) {
+    rtSetStatus('error: ' + e.message);
+    rtPush('info', 'connect failed: ' + e.message);
+  }
+}
+
+function rtSendWS() {
+  const sock = state.rt.ws;
+  const box = $('#rt-msg');
+  if (!sock || sock.readyState !== WebSocket.OPEN) return notify('not connected', 'err');
+  const msg = box ? box.value : '';
+  if (!msg) return;
+  sock.send(msg);
+  rtPush('up', msg);
+  if (box) box.value = '';
+}
+
+async function rtConnectSSE() {
+  rtDisconnect(false);
+  rtSetStatus('connecting…');
+  try {
+    const ticket = await rtMintTicket('sse', { event_type: $('#rt-event').value });
+    const src = new EventSource('/api/realtime/sse?ticket=' + encodeURIComponent(ticket));
+    state.rt.sse = src;
+    rtSetStatus('connected');
+    rtPush('info', 'connected (server-relayed)');
+    src.onmessage = (ev) => rtPush('down', String(ev.data));
+    src.onerror = () => { rtSetStatus('error/retrying…'); rtPush('info', 'sse error (browser will retry)'); };
+  } catch (e) {
+    rtSetStatus('error: ' + e.message);
+    rtPush('info', 'connect failed: ' + e.message);
+  }
+}
+
+function rtDisconnect(notifyUser) {
+  if (state.rt.ws) { try { state.rt.ws.close(); } catch (e) {} state.rt.ws = null; }
+  if (state.rt.sse) { try { state.rt.sse.close(); } catch (e) {} state.rt.sse = null; }
+  if (notifyUser) { rtSetStatus('closed'); rtPush('info', 'disconnected'); }
+}
+
 function buildAdHoc() {
+  // Realtime editors have no method/body_type controls: the wire is always
+  // GET-upgrade (WS) or GET-stream (SSE); subprotocol / event filter ride in
+  // body / variables so save + ticket-mint share one shape.
+  if (state.proto === 'ws' || state.proto === 'sse') {
+    const headers = {};
+    const hbox = $('#req-headers');
+    if (hbox) collectKV(hbox).forEach((p) => { headers[p.k] = p.v; });
+    const qbox = $('#req-query');
+    return {
+      method: 'GET',
+      url: $('#rt-url') ? $('#rt-url').value : (state.current ? state.current.url : ''),
+      headers: headers,
+      query: qbox ? collectKV(qbox) : [],
+      body_type: 'none',
+      body: state.proto === 'ws' && $('#rt-proto') ? $('#rt-proto').value : '',
+      variables: state.proto === 'sse' && $('#rt-event') ? $('#rt-event').value : '',
+      use_proxy: false,
+    };
+  }
   const headers = {};
   collectKV($('#req-headers')).forEach((p) => { headers[p.k] = p.v; });
   return {
@@ -693,10 +926,12 @@ function buildAdHoc() {
 async function saveRequest() {
   const c = state.current;
   const ad = buildAdHoc();
+  const statusEl = $('#send-status') || $('#rt-status');
   const payload = {
     collection_id: Number($('#req-coll').value),
     folder_id: $('#req-folder').value ? Number($('#req-folder').value) : null,
     name: $('#req-name').value || 'Untitled',
+    protocol: state.proto || 'http',
     method: ad.method,
     url: ad.url,
     headers: JSON.stringify(ad.headers),
@@ -706,7 +941,7 @@ async function saveRequest() {
     variables: ad.variables,
     use_proxy: ad.use_proxy,
   };
-  $('#send-status').textContent = 'saving…';
+  if (statusEl) statusEl.textContent = 'saving…';
   try {
     if (c.id) {
       await api('/requests/' + c.id, { method: 'PUT', body: payload });
@@ -716,9 +951,50 @@ async function saveRequest() {
     }
     Object.assign(c, payload, { headers: ad.headers, query: ad.query });
     await loadCollections();
-    $('#send-status').textContent = 'saved #' + c.id;
+    renderTree();
+    if (statusEl) statusEl.textContent = 'saved #' + c.id;
   } catch (e) {
-    $('#send-status').textContent = 'save failed: ' + e.message;
+    if (statusEl) statusEl.textContent = 'save failed: ' + e.message;
+  }
+}
+
+// Duplicate saves the current editor content as a brand-new request in the
+// same collection/folder, so a working request can be cloned and tweaked
+// without rebuilding headers/params/body by hand.
+async function duplicateRequest() {
+  const c = state.current;
+  if (!c) return;
+  const ad = buildAdHoc();
+  const statusEl = $('#send-status') || $('#rt-status');
+  const collSel = $('#req-coll');
+  const foldSel = $('#req-folder');
+  const nameSel = $('#req-name');
+  const payload = {
+    collection_id: Number(collSel.value),
+    folder_id: foldSel.value ? Number(foldSel.value) : null,
+    name: ((nameSel && nameSel.value) || c.name || 'Untitled') + ' (copy)',
+    protocol: state.proto || 'http',
+    method: ad.method,
+    url: ad.url,
+    headers: JSON.stringify(ad.headers),
+    query: JSON.stringify(ad.query),
+    body_type: ad.body_type,
+    body: ad.body,
+    variables: ad.variables,
+    use_proxy: ad.use_proxy,
+  };
+  if (statusEl) statusEl.textContent = 'duplicating…';
+  try {
+    const data = await api('/requests', { method: 'POST', body: payload });
+    c.id = data.id;
+    Object.assign(c, payload, { headers: ad.headers, query: ad.query });
+    if (nameSel) nameSel.value = payload.name;
+    await loadCollections();
+    renderTree();
+    if (statusEl) statusEl.textContent = 'duplicated #' + c.id;
+    notify('duplicated as "' + payload.name + '"');
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'duplicate failed: ' + e.message;
   }
 }
 
@@ -1026,7 +1302,19 @@ async function setUserEnabled(id, enabled) {
 }
 
 async function resetPassword(id) {
-  const data = await api('/users/' + id + '/reset-password', { method: 'POST', body: {} });
+  // Manual input first (empty = random): random strings are hard to remember,
+  // so let the admin type one. The server still enforces >= 6 chars.
+  const manual = await askInput('Reset password', 'new password (empty = random)', '', {
+    message: 'Leave empty to generate a random one. Manual passwords need at least 6 characters.',
+    placeholder: 'e.g. summer-2026-rain',
+    confirmLabel: 'Reset',
+  });
+  if (manual === null) return; // cancelled
+  if (manual !== '' && manual.length < 6) return notify('password must be at least 6 characters', 'err');
+  const data = await api('/users/' + id + '/reset-password', {
+    method: 'POST',
+    body: manual === '' ? {} : { new_password: manual },
+  });
   await askInput('One-time password', 'password', data.password, {
     message: 'Copy it now — the server never shows it again.',
     readOnly: true,
@@ -1103,12 +1391,32 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
   $('#btn-logout').addEventListener('click', async () => {
+    closeUserMenu();
     try { await api('/auth/logout', { method: 'POST' }); } catch (e) { /* ignore */ }
     showLogin();
   });
   $('#main-nav').addEventListener('click', (ev) => {
     const btn = ev.target.closest('button[data-view]');
     if (btn) setView(btn.dataset.view);
+  });
+  // User menu: one dropdown for account + admin pages.
+  $('#user-menu-btn').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    toggleUserMenu();
+  });
+  $('#user-menu').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-view]');
+    if (btn) {
+      setView(btn.dataset.view);
+      closeUserMenu();
+    }
+  });
+  document.addEventListener('click', (ev) => {
+    const menu = $('#user-menu');
+    if (menu && !menu.hidden && !ev.target.closest('.user-menu-wrap')) closeUserMenu();
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') closeUserMenu();
   });
   // Keyboard first, buttons second: Enter in the URL field and Ctrl/Cmd+Enter
   // both send, Ctrl/Cmd+S saves without opening the browser's save dialog.
