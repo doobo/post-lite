@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PostLite</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<div id="login-view" class="login-wrap">
+  <form id="login-form" class="card login-card">
+    <h1>PostLite</h1>
+    <p class="muted">Intranet API client</p>
+    <input id="login-user" placeholder="Username" autocomplete="username" required>
+    <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password" required>
+    <button type="submit" class="primary">Sign in</button>
+    <p id="login-err" class="err"></p>
+  </form>
+</div>
+
+<div id="app-view" hidden>
+  <header>
+    <strong>PostLite</strong>
+    <span id="who" class="muted"></span>
+    <span id="flash"></span>
+    <button id="btn-logout" class="ghost">Log out</button>
+  </header>
+  <div class="cols">
+    <aside>
+      <nav id="main-nav">
+        <button data-view="collections">Collections</button>
+        <button data-view="editor">Request</button>
+        <button data-view="environments">Environments</button>
+        <button data-view="history">History</button>
+        <button data-view="secrets" class="admin-only">Secrets</button>
+        <button data-view="users" class="admin-only">Users</button>
+        <button data-view="settings" class="admin-only">Settings</button>
+      </nav>
+      <div id="tree" class="tree"></div>
+    </aside>
+    <main id="content"></main>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

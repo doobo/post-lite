@@ -1,0 +1,17 @@
+# 本地草稿笔记（设计说明已整理进 docs/DESIGN.md）
+Task.md
+
+# 构建产物
+bin/
+*.exe
+
+# 运行数据（SQLite、master.key、自签证书）
+data/
+dev-data/
+smoke-data/
+
+# 本地日志与调试残留
+*.log
+dev-cookies.txt
+smoke-cookies.txt
+.cdp-profile/
