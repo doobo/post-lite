@@ -38,6 +38,32 @@ func checkProtocol(w http.ResponseWriter, protocol string) (string, bool) {
 	return protocol, true
 }
 
+// maxScriptBytes bounds a pre-request script. The 4MB body limit already caps
+// what can be stored; this is a much smaller bound so a saved script stays
+// something a human could have written and stays cheap to compile on send.
+const maxScriptBytes = 64 << 10
+
+// checkScripts validates the pre-request and post-response script fields.
+// Realtime rows are refused outright rather than storing scripts that would
+// silently never run: the ws/sse path opens a relay session, not a script
+// pipeline.
+func checkScripts(w http.ResponseWriter, p repository.RequestPayload, protocol string) bool {
+	for _, s := range []struct{ field, src string }{{"script", p.Script}, {"test_script", p.TestScript}} {
+		if s.src == "" {
+			continue
+		}
+		if len(s.src) > maxScriptBytes {
+			fail(w, http.StatusBadRequest, "bad_request", s.field+" is too long (limit 64KB)")
+			return false
+		}
+		if protocol != "http" {
+			fail(w, http.StatusBadRequest, "bad_request", "scripts are only supported for http requests")
+			return false
+		}
+	}
+	return true
+}
+
 func checkBodyType(w http.ResponseWriter, bodyType string) bool {
 	if bodyType == "" {
 		return true
@@ -118,6 +144,10 @@ func (s *Server) createRequest(w http.ResponseWriter, r *http.Request) {
 	if !checkBodyType(w, p.BodyType) {
 		return
 	}
+	if !checkScripts(w, p, proto) {
+		return
+	}
+
 	if p.CollectionID == 0 {
 		fail(w, http.StatusBadRequest, "bad_request", "collection_id is required")
 		return
@@ -212,6 +242,9 @@ func (s *Server) updateRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !checkBodyType(w, p.BodyType) {
+		return
+	}
+	if !checkScripts(w, p, proto) {
 		return
 	}
 	p.CollectionID = rq.CollectionID

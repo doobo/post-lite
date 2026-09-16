@@ -236,6 +236,11 @@ type expRequest struct {
 	BodyType  string            `json:"body_type"`
 	Body      string            `json:"body"`
 	Variables string            `json:"variables,omitempty"` // graphql only
+	// Script / TestScript travel with the collection: they are request logic,
+	// not instance configuration (unlike use_proxy, which is deliberately left
+	// out).
+	Script     string `json:"script,omitempty"`
+	TestScript string `json:"test_script,omitempty"`
 }
 
 type kvPair struct {
@@ -285,6 +290,7 @@ func (s *Server) exportCollection(w http.ResponseWriter, r *http.Request) {
 		er := expRequest{
 			ID: rq.ID, FolderID: rq.FolderID, Name: rq.Name, Protocol: rq.Protocol, Method: rq.Method,
 			URL: rq.URL, BodyType: rq.BodyType, Body: rq.Body, Variables: rq.Variables,
+			Script: rq.Script, TestScript: rq.TestScript,
 		}
 		if rq.Headers != "" {
 			_ = json.Unmarshal([]byte(rq.Headers), &er.Headers)
@@ -376,6 +382,8 @@ func repositoryRequestPayload(rq expRequest, colID int64, oldToNew map[int64]int
 	p.BodyType = rq.BodyType
 	p.Body = rq.Body
 	p.Variables = rq.Variables
+	p.Script = rq.Script
+	p.TestScript = rq.TestScript
 	if rq.Headers != nil {
 		b, _ := json.Marshal(rq.Headers)
 		p.Headers = string(b)

@@ -51,9 +51,15 @@ type Request struct {
 	Body     string `json:"body"`
 	// Variables is the GraphQL variables document; only used when BodyType is
 	// "graphql", and kept as text so the editor can show what the user typed.
-	Variables string    `json:"variables"`
-	UseProxy  bool      `json:"use_proxy"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Variables string `json:"variables"`
+	// Script is the pre-request script (JS), run server-side in the sandbox
+	// before {{VAR}} resolution. Empty means "no script".
+	Script string `json:"script"`
+	// TestScript is the post-response script (JS): pm.response assertions and
+	// pm.test results, run after the response comes back and is redacted.
+	TestScript string    `json:"test_script"`
+	UseProxy   bool      `json:"use_proxy"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type Environment struct {

@@ -30,6 +30,7 @@ func main() {
 		keyFile    = flag.String("key", "", "TLS key PEM (default: auto self-signed in data dir)")
 		plain      = flag.Bool("plain", false, "run plain HTTP (insecure, dev only)")
 		timeout    = flag.Duration("timeout", 60*time.Second, "default execution timeout")
+		scriptTO   = flag.Duration("script-timeout", 5*time.Second, "pre-request script timeout")
 		maxHistory = flag.Int("max-history", 1000, "max history rows to keep")
 		masterKey  = flag.String("master-key", "", "vault master key (32B hex/base64); overrides env and file")
 		masterKeyF = flag.String("master-key-file", "", "master key file (created if missing)")
@@ -83,11 +84,12 @@ func main() {
 	bootstrapAdmin(store, log)
 
 	cfg := config.Config{
-		Addr:         *addr,
-		DataDir:      *dataDir,
-		Timeout:      *timeout,
-		MaxHistory:   *maxHistory,
-		SecureCookie: !*plain,
+		Addr:          *addr,
+		DataDir:       *dataDir,
+		Timeout:       *timeout,
+		ScriptTimeout: *scriptTO,
+		MaxHistory:    *maxHistory,
+		SecureCookie:  !*plain,
 	}
 
 	exec := executor.NewExecutor(cfg.Timeout)

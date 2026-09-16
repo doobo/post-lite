@@ -4,8 +4,9 @@
 所有出站请求由服务端代发，密钥**只写不读**。
 
 - **单文件部署**：前端静态文件通过 `go:embed` 编进二进制，拷一个文件就能跑
-- **零/极简依赖**：以 Go 标准库为主，直接依赖只有 `modernc.org/sqlite`（纯 Go、无 cgo）与
-  `golang.org/x/crypto`（scrypt）；go.mod 中其余条目是 SQLite 驱动的传递依赖（标记为 `// indirect`）
+- **零/极简依赖**：以 Go 标准库为主，直接依赖只有 `modernc.org/sqlite`（纯 Go、无 cgo）、
+  `golang.org/x/crypto`（scrypt）与 `github.com/dop251/goja`（纯 Go 的 JS 引擎，供脚本沙箱使用，
+  不引入 Node.js/npm）；go.mod 中其余条目是这两个依赖的传递依赖（标记为 `// indirect`）
 - **密钥不落明文**：Secret 用 AES-256-GCM 加密入库，服务端不提供任何读取明文的接口
 - **多用户 + RBAC**：`admin` / `user` 两种角色，资源按 owner 隔离
 
@@ -61,6 +62,7 @@ change it after first login (Users -> reset-password).
 | `-cert` / `-key` | 空 | TLS 证书；留空则自动在数据目录生成自签证书（ECDSA P-256） |
 | `-plain` | `false` | 以明文 HTTP 运行（仅限开发） |
 | `-timeout` | `60s` | 默认执行超时 |
+| `-script-timeout` | `5s` | 单个前置脚本的超时（脚本在请求路径上同步跑，故意短） |
 | `-max-history` | `1000` | history 保留条数 |
 | `-master-key` | 空 | Vault 主密钥（32B 的 hex 或 base64），优先级最高 |
 | `-master-key-file` | `data/master.key` | 主密钥文件，不存在则自动生成（0600） |
@@ -72,11 +74,24 @@ change it after first login (Users -> reset-password).
 
 ## 功能概览
 
-- **Collections / Folders / Requests**：集合支持嵌套文件夹（`parent_id`），请求方法仅允许 `GET/POST/PUT/PATCH/DELETE`（服务端校验），支持 Headers、Query、Body（UI 提供 `none` / `json` / `raw` / `graphql`）
+- **Collections / Folders / Requests**：集合支持嵌套文件夹（`parent_id`），请求方法仅允许 `GET/POST/PUT/PATCH/DELETE`（服务端校验），支持 Headers、Query、Body（UI 提供 `none` / `json` / `raw` / `graphql`），http 请求还可带一段前置脚本（见下「前置脚本」）
 - **GraphQL**：Body 类型选 `graphql` 后，上面写 query、下面写 variables（JSON 对象，可空）；发送时服务端拼成 `{"query":…,"variables":…}` 以 `application/json` POST，`{{VAR}}` / `{{sec.NAME}}` 在 query 与 variables 里都会解析；variables 不是合法 JSON 时直接 `400`，不会带着畸形 body 出去
 - **Environments**：`global`（admin 创建/管理）与 `user` 两种作用域；激活状态存在服务端 settings（`active_global_env`、`active_env_user_<uid>`），因此是按用户持久生效的
 - **Secret Vault**：只写不读，覆盖更新，命中才解密（进程内缓存 5 分钟，写入即失效）
 - **变量**：`{{VAR}}` 占位符在 URL / Headers / Query / Body 统一解析（正则 `\{\{([\w.]+)\}\}`）
+- **脚本（前置 + 后置）**：http 请求可带两段 JS（编辑器 Script / Tests 分页），都在服务端 goja 沙箱里跑：
+  - **前置**（变量解析之前）：可改 `pm.request`（method / url / headers / body）与 `pm.variables`；出错或超时
+    （默认 5s）**直接不发请求**（`400 script_error` / `script_timeout` 并写审计）
+  - **后置**（拿到响应之后）：`pm.response` 断言 + `pm.test` / `pm.expect`（chai 子集）/ 旧式 `tests['name']`，
+    结果随响应返回（`script.tests`），失败或脚本报错都**不影响响应本身**（已发生的事情不该被掩盖）
+  - `pm.require('npm:tweetnacl@1.0.3')` / `npm:uuid@9.0.0` 由 Go 实现（Ed25519 走 `crypto/ed25519`，不联网、不装 npm），
+    另有 `pm.crypto.ed25519.sign()` 原生签名 API
+  - 密钥不进沙箱：变量里没有 `sec.*`，只能留 `{{sec.NAME}}` 占位符交给服务端解析；后置脚本看到的响应已经是
+    脱敏后的文本（和面板里一样），所以断言消息也不可能把密钥带出去。脚本自己要拿密钥签名（比如 Ed25519 的 seed）
+    时只能从「Vars」分页 / 环境变量读（`pm.variables.get('NAME')`）或明文写在脚本里 —— 共享 Task.md 里的
+    `***` 是掩码值，原样粘进来会在 `atob` 处报 `InvalidCharacterError`（消息会指出哪里不对，不回显该值；
+    可直接照抄 `internal/script/testdata/task_md_migrated.js`，它既是可运行样例也是回归测试）
+  - 设计见 [docs/post-lite-script.md](docs/post-lite-script.md)，实现见 `internal/script`
 - **执行**：服务端代发，默认不跟随重定向（可请求级开启，最多 5 跳），响应体截断 10MB，history 仅存脱敏后 1MB
 - **代理**：管理员在 Settings 里配一个 `http://` 或 `https://` 代理（空 = 直连）；**每个请求自己决定**是否走代理（编辑器里的 `use proxy`，默认关闭，存在请求上）
 - **主题**：Light（灰白）/ Dark / Black 三套配色，头部下拉切换，选择记在浏览器 `localStorage`（不是服务端设置，不影响别人）
@@ -144,8 +159,9 @@ Environments  GET/POST /api/environments      GET/PUT/DELETE /api/environments/{
               POST /api/environments/activate
 Secrets       POST /api/secrets               PUT /api/secrets/{name}
 (admin)       GET  /api/secrets               DELETE /api/secrets/{id}      # GET 仅返回 id + name + updated_at
-Execute       POST /api/execute               # { request_id | ad_hoc{..., use_proxy}, vars, active_env,
-                                              #   follow_redirects }；响应带 proxied 布尔值
+Execute       POST /api/execute               # { request_id | ad_hoc{..., script, test_script, use_proxy}, vars,
+                                              #   active_env, follow_redirects }；响应带 proxied；带脚本时另有
+                                              #   script{logs,vars,tests[{name,passed,message}],test_error}
 History       GET /api/history?request_id=&limit=   GET /api/history/{id}   DELETE /api/history/{id}
 Settings      GET/PUT /api/settings           # 含 proxy_url（空 = 直连）
 ```
@@ -202,6 +218,7 @@ postlite/
 │   ├── repository/          # 各实体 repo，统一 owner 过滤
 │   ├── httpapi/             # REST handler（server/execute/settings/...）
 │   ├── executor/            # 出站执行、SSRF 校验、变量解析、脱敏
+│   ├── script/              # 脚本沙箱（goja 运行时、pm.require/pm.crypto/pm.request/pm.response/pm.expect）
 │   └── web/static/          # 内嵌前端（index.html / app.js / app.css / loginenc.js）
 │                            #   loginenc.js：明文 HTTP（无 crypto.subtle）时的纯 JS RSA-OAEP 回退
 ├── docs/DESIGN.md          # 设计说明（为什么这么设计）
@@ -270,5 +287,10 @@ ADMIN_PW=<上面的一次性密码> BASE_URL=http://127.0.0.1:5681 node uitest.m
 
 ## 路线图（V0.2）
 
-WebSocket 代理、form-data / 文件上传、SSE 流式响应、请求前置后置脚本（JS 沙箱）、
+WebSocket 代理、form-data / 文件上传、SSE 流式响应、请求前置后置脚本、
 团队空间、导出 OpenAPI。各模块的设计取舍与实现细节见 [`docs/DESIGN.md`](docs/DESIGN.md)。
+
+> JS 沙箱（`internal/script`）已经接入 `/api/execute`：http 请求有前置脚本与后置测试脚本，脚本可读写
+> `pm.request` / `pm.variables`，后置脚本还可用 `pm.response` / `pm.test` / `pm.expect`。尚未做的：
+> `pm.sendRequest`（脚本内再发请求）、`pm.response.json()` 之外的响应 API（cookies / visualizer）、
+> Socket.IO / MQTT、form-data 上传。设计见 [`docs/post-lite-script.md`](docs/post-lite-script.md)。

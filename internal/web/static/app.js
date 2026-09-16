@@ -537,6 +537,15 @@ function updateTabCounts() {
   set('headers', filled('#req-headers'));
   set('params', filled('#req-query'));
   set('vars', filled('#req-vars'));
+  // Scripts have no row count, so their badges are just a dot: enough to notice
+  // the tab is not empty without implying a number.
+  const badge = (id, tab) => {
+    const el = $('#' + id);
+    const slot = document.querySelector('[data-count="' + tab + '"]');
+    if (slot) slot.textContent = (el && el.value.trim()) ? '\u2022' : '';
+  };
+  badge('req-script', 'script');
+  badge('req-test-script', 'tests');
 }
 
 function collOptions(selected) {
@@ -567,6 +576,8 @@ async function newRequest(collId) {
     body_type: 'none',
     body: '',
     variables: '',
+    script: '',
+    test_script: '',
     use_proxy: false,
   };
   state.results = null;
@@ -589,6 +600,8 @@ async function loadRequest(id) {
     body_type: rq.body_type || 'none',
     body: rq.body || '',
     variables: rq.variables || '',
+    script: rq.script || '',
+    test_script: rq.test_script || '',
     use_proxy: !!rq.use_proxy,
   };
   state.results = null;
@@ -666,7 +679,7 @@ async function renderEditor() {
     + '<span class="hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> send · <kbd>Ctrl</kbd>+<kbd>S</kbd> save</span>'
     + '<span id="send-status" class="muted"></span>'
     + '</div>'
-    + '<div class="tabs">' + reqTab('headers', 'Headers') + reqTab('params', 'Params') + reqTab('body', 'Body') + reqTab('vars', 'Vars') + '</div>'
+    + '<div class="tabs">' + reqTab('headers', 'Headers') + reqTab('params', 'Params') + reqTab('body', 'Body') + reqTab('vars', 'Vars') + reqTab('script', 'Script') + reqTab('tests', 'Tests') + '</div>'
     + reqPanel('headers', '<div id="req-headers">' + kvRows(objPairs(c.headers), 'Header', 'value') + '</div>')
     + reqPanel('params', '<div id="req-query">' + kvRows(c.query, 'key', 'value') + '</div>')
     + reqPanel('body', '<div class="row"><select id="req-bodytype" onchange="onBodyTypeChange()">'
@@ -681,7 +694,12 @@ async function renderEditor() {
       + '<textarea id="req-gql-vars" rows="5" placeholder=\'{"id":"42"}\'>' + esc(c.variables || '') + '</textarea>'
       + '</div>')
     + reqPanel('vars', '<div id="req-vars">' + kvRows([], 'name', 'value') + '</div>'
-      + '<p class="hint">Temporary variables win over environments and secrets, and are never stored.</p>')
+      + '<p class="hint">Temporary variables win over environments and secrets, and are never stored. '
+      + 'A pre-request script can set more of them with <code>pm.variables.set()</code>.</p>')
+    + reqPanel('script', SCRIPT_HINT
+      + '<textarea id="req-script" rows="10" oninput="updateTabCounts()">' + esc(c.script || '') + '</textarea>')
+    + reqPanel('tests', TESTS_HINT
+      + '<textarea id="req-test-script" rows="10" oninput="updateTabCounts()">' + esc(c.test_script || '') + '</textarea>')
     + '<div id="result"></div>'
     + '</div>';
   updateMethodColor();
@@ -720,6 +738,33 @@ function onBodyTypeChange() {
     updateMethodColor();
   }
 }
+
+// SCRIPT_HINT documents the surface a pre-request script gets. Kept next to the
+// editor so nobody has to open docs/post-lite-script.md to write a first script.
+const SCRIPT_HINT = '<p class="hint">Runs <strong>server-side</strong>, before <code>{{VAR}}</code> resolution, '
+  + 'so it can sign the payload or rewrite the request. A failing script aborts the send.</p>'
+  + '<p class="hint">Available: <code>pm.request</code> (<code>method</code>, <code>url</code>, '
+  + '<code>headers.add/upsert/remove/get</code>, <code>body.raw</code>), <code>pm.variables</code> '
+  + '(<code>get/set/has/unset/replaceIn</code>, also as <code>pm.environment</code>), '
+  + '<code>pm.require(\'npm:tweetnacl@1.0.3\')</code>, <code>pm.require(\'npm:uuid@9.0.0\')</code>, '
+  + '<code>pm.crypto.ed25519.sign()</code>, <code>console.log</code>.</p>'
+  + '<p class="hint">Secrets stay out of reach: leave <code>{{sec.NAME}}</code> in a header or in the body '
+  + 'and the server expands it after the script.</p>'
+  + '<p class="hint">A key the script itself must sign with (a private seed) therefore comes from the '
+  + 'Vars tab, read back as <code>pm.variables.get(\'PRIVATE_KEY_BASE64\')</code>. <code>***</code> is always '
+  + 'a masked value: a script copied out of a shared Task.md needs the real one put back before it can sign.</p>';
+
+// TESTS_HINT documents the post-response side.
+const TESTS_HINT = '<p class="hint">Runs <strong>server-side</strong>, after the response comes back. '
+  + 'A failing assertion is reported, never fatal — the response is already there.</p>'
+  + '<p class="hint">Available: <code>pm.response</code> (<code>code</code>, <code>status</code>, '
+  + '<code>responseTime</code>, <code>text()</code>, <code>json()</code>, <code>headers.get()</code>, '
+  + '<code>to.have.status()</code>, <code>to.have.header()</code>, <code>to.be.ok/json/error</code>), '
+  + '<code>pm.test(name, fn)</code>, <code>pm.expect()</code> (chai subset: equal, eql, above/below, '
+  + 'include, match, length, property, oneOf, satisfy, true/false/null/exist/empty/ok, plus .not and .deep), '
+  + 'the legacy <code>tests[\'name\'] = true</code>, <code>pm.variables</code> and <code>console.log</code>.</p>'
+  + '<p class="hint">Secrets are already masked here (the same text the response panel shows), '
+  + 'so an assertion can never print one.</p>';
 
 function onCollChange() {
   $('#req-folder').innerHTML = folderOptions(Number($('#req-coll').value), null);
@@ -919,8 +964,19 @@ function buildAdHoc() {
     body_type: $('#req-bodytype').value,
     body: $('#req-body').value,
     variables: $('#req-gql-vars') ? $('#req-gql-vars').value : '',
+    // The editor sends ad_hoc even for a saved request, so both scripts have to
+    // travel with it or an unsaved edit would be ignored.
+    script: scriptFieldValue('req-script'),
+    test_script: scriptFieldValue('req-test-script'),
     use_proxy: $('#req-proxy').checked,
   };
+}
+
+// scriptFieldValue reads one of the script panels, which only exist in the HTTP
+// editor (a realtime request has no script pipeline).
+function scriptFieldValue(id) {
+  const el = $('#' + id);
+  return el ? el.value : '';
 }
 
 async function saveRequest() {
@@ -939,6 +995,8 @@ async function saveRequest() {
     body_type: ad.body_type,
     body: ad.body,
     variables: ad.variables,
+    script: ad.script,
+    test_script: ad.test_script,
     use_proxy: ad.use_proxy,
   };
   if (statusEl) statusEl.textContent = 'saving…';
@@ -981,6 +1039,8 @@ async function duplicateRequest() {
     body_type: ad.body_type,
     body: ad.body,
     variables: ad.variables,
+    script: ad.script,
+    test_script: ad.test_script,
     use_proxy: ad.use_proxy,
   };
   if (statusEl) statusEl.textContent = 'duplicating…';
@@ -1065,6 +1125,8 @@ function renderResult() {
   const headers = d.headers || {};
   const headerLines = Object.keys(headers).map((k) => k + ': ' + (headers[k] || []).join(', ')).join('\n');
   const bytes = (d.body || '').length;
+  const tests = (d.script && d.script.tests) || [];
+  const testsFailed = tests.filter((t) => !t.passed).length;
   const resTab = (name, label) => '<button class="tab' + (state.resTab === name ? ' active' : '') + '"'
     + ' data-group="res" data-tab="' + name + '" onclick="setResTab(\'' + name + '\')">' + label + '</button>';
   const resPanel = (name, inner) => '<div class="tabpanel" data-group="res" data-panel="' + name + '"'
@@ -1075,7 +1137,9 @@ function renderResult() {
     + '<h2>Response <span class="pill ' + statusClass(d.status) + '">' + d.status + ' ' + esc(d.status_text || '') + '</span></h2>'
     + '<span class="meta-line"><span>' + d.duration_ms + ' ms</span><span class="sep">·</span><span>' + bytes + ' B</span>'
     + '<span class="sep">·</span><span>secrets masked as ***</span>'
-    + (d.proxied ? '<span class="sep">·</span><span class="badge on">via proxy</span>' : '') + '</span>'
+    + (d.proxied ? '<span class="sep">·</span><span class="badge on">via proxy</span>' : '')
+    + (tests.length ? '<span class="sep">·</span><span class="pill ' + (testsFailed ? 'status-4xx' : 'status-2xx') + '">'
+      + (tests.length - testsFailed) + '/' + tests.length + ' tests</span>' : '') + '</span>'
     + '<span class="spacer"></span>'
     + '<button class="ghost" onclick="copyResponse()" title="Copy the response body">Copy</button>'
     + '</div>';
@@ -1084,11 +1148,43 @@ function renderResult() {
   if (d.warnings && d.warnings.length) {
     html += '<div class="notice"><b>Unresolved</b><span>' + d.warnings.map(esc).join(', ') + ' — sent as-is</span></div>';
   }
-  html += '<div class="tabs">' + resTab('body', 'Body') + resTab('headers', 'Headers') + '</div>'
+  if (d.script && d.script.test_error) {
+    html += '<div class="notice err"><b>Test script failed</b><span>' + esc(d.script.test_error) + '</span></div>';
+  }
+  // The Script tab shows up whenever a script ran, logs or not: an empty log is
+  // information too ("it ran and printed nothing").
+  const hasScript = !!d.script;
+  html += '<div class="tabs">' + resTab('body', 'Body') + resTab('headers', 'Headers')
+    + (hasScript ? resTab('script', 'Script') : '') + '</div>'
     + resPanel('body', '<pre>' + esc(d.body || '') + '</pre>')
     + resPanel('headers', '<pre>' + esc(headerLines) + '</pre>')
+    + (hasScript ? resPanel('script', renderScriptPanel(d.script)) : '')
     + '</div>';
   $('#result').innerHTML = html;
+}
+
+// renderScriptPanel shows the pm.test results, the variables the scripts set and
+// their console output. Secrets can never appear here: scripts never receive
+// them (the response a test script sees is already masked).
+function renderScriptPanel(s) {
+  const tests = s.tests || [];
+  let html = '';
+  if (tests.length) {
+    const failed = tests.filter((t) => !t.passed).length;
+    html += '<div class="meta-line"><span>' + (tests.length - failed) + ' of ' + tests.length + ' tests passed</span></div>'
+      + '<table><tr><th></th><th>test</th><th>message</th></tr>'
+      + tests.map((t) => '<tr><td><span class="pill ' + (t.passed ? 'status-2xx' : 'status-4xx') + '">'
+          + (t.passed ? 'pass' : 'fail') + '</span></td><td>' + esc(t.name) + '</td>'
+          + '<td class="muted">' + esc(t.message || '') + '</td></tr>').join('')
+      + '</table>';
+  }
+  const vars = Object.keys(s.vars || {});
+  if (vars.length) {
+    html += '<div class="meta-line"><span>variables set</span><code>'
+      + vars.map((k) => esc(k + ' = ' + s.vars[k])).join('<br>') + '</code></div>';
+  }
+  const logs = (s.logs && s.logs.length) ? s.logs.map(esc).join('\n') : '(no console output)';
+  return html + '<pre>' + logs + '</pre>';
 }
 
 // The async clipboard API needs a secure context (a plain-HTTP intranet page is

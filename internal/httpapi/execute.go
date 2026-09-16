@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -12,6 +13,19 @@ import (
 
 	"postlite/internal/executor"
 	"postlite/internal/repository"
+	"postlite/internal/script"
+)
+
+// defaultScriptTimeout bounds a pre-request script when the server was started
+// without an explicit -script-timeout. Much shorter than the request timeout on
+// purpose: the caller is blocked while the script runs.
+const defaultScriptTimeout = 5 * time.Second
+
+// maxScriptLogLines / maxScriptLogBytes keep a chatty script from turning the
+// execute response into a payload of its own.
+const (
+	maxScriptLogLines = 200
+	maxScriptLogBytes = 64 << 10
 )
 
 type executeBody struct {
@@ -25,7 +39,12 @@ type executeBody struct {
 		Body     string            `json:"body"`
 		// Variables carries the GraphQL variables document (body_type=graphql).
 		Variables string `json:"variables"`
-		UseProxy  bool   `json:"use_proxy"`
+		// Script / TestScript are the pre-request and post-response JS. The UI
+		// sends ad_hoc even for saved requests, so they have to ride along here as
+		// well as on the stored row.
+		Script     string `json:"script"`
+		TestScript string `json:"test_script"`
+		UseProxy   bool   `json:"use_proxy"`
 	} `json:"ad_hoc"`
 	Vars            map[string]string `json:"vars"`
 	ActiveEnv       *activateBody     `json:"active_env"`
@@ -54,6 +73,8 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 		bodyT     string
 		body      string
 		variables string
+		scriptSrc string
+		testSrc   string
 		reqID     *int64
 		useProxy  bool
 	)
@@ -75,6 +96,8 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 		bodyT = rq.BodyType
 		body = rq.Body
 		variables = rq.Variables
+		scriptSrc = rq.Script
+		testSrc = rq.TestScript
 		useProxy = rq.UseProxy
 		p := repository.RequestPayload{Headers: rq.Headers, Query: rq.Query}
 		headers = p.HeadersMap()
@@ -89,6 +112,8 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 		bodyT = b.AdHoc.BodyType
 		body = b.AdHoc.Body
 		variables = b.AdHoc.Variables
+		scriptSrc = b.AdHoc.Script
+		testSrc = b.AdHoc.TestScript
 		useProxy = b.AdHoc.UseProxy
 		for _, q := range b.AdHoc.Query {
 			query = append(query, [2]string{q.K, q.V})
@@ -129,6 +154,70 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 	}
 	for k, v := range b.Vars {
 		values[k] = v
+	}
+
+	// The sandbox is created lazily so a request without scripts pays nothing for
+	// it, and shared between the two phases so a variable the pre-request script
+	// sets is still visible to the assertions that run afterwards.
+	var (
+		logBuf        bytes.Buffer
+		rt            *script.Runtime
+		env           *script.Env
+		preRan        bool
+		testRan       bool
+		testError     string
+		scriptLogs    []string
+		scriptChanged map[string]string
+	)
+	sandbox := func() (*script.Runtime, *script.Env) {
+		if rt == nil {
+			rt = script.New(script.WithTimeout(s.scriptTimeout()), script.WithConsole(&logBuf))
+			env = script.NewEnv(&script.RequestCtx{
+				Method:   method,
+				URL:      urlStr,
+				BodyType: bodyT,
+				Body:     body,
+				Headers:  script.SortedHeaders(headers),
+			}, values)
+			rt.Bind(env)
+		}
+		return rt, env
+	}
+
+	// Pre-request script: runs before variable resolution, so it can sign the
+	// payload or rewrite the request, and so a variable it sets is visible to the
+	// resolver below. Secrets are deliberately absent from the variable bag: a
+	// script can only leave a {{sec.NAME}} placeholder behind for the resolver to
+	// expand, never read a value.
+	if strings.TrimSpace(scriptSrc) != "" {
+		preRan = true
+		rt, env = sandbox()
+		_, serr := rt.Run("pre-request.js", scriptSrc)
+		if serr != nil {
+			// A script error aborts the request (like Postman): a signature that
+			// was never computed must not be sent as an unsigned call.
+			msg := script.ErrorMessage(serr)
+			s.audit(u.Username, "execute.script_error", msg)
+			if errors.Is(serr, script.ErrTimeout) {
+				fail(w, http.StatusBadRequest, "script_timeout", msg)
+				return
+			}
+			fail(w, http.StatusBadRequest, "script_error", msg)
+			return
+		}
+
+		method = env.Request.Method
+		urlStr = env.Request.URL
+		body = env.Request.Body
+		// A script that writes a body into a body_type=none request clearly wants
+		// it sent; "raw" is the honest label for free-form text.
+		if bodyT == "none" && strings.TrimSpace(body) != "" {
+			bodyT = "raw"
+		}
+		headers = env.HeaderMap()
+		for k, v := range env.Vars {
+			values[k] = v
+		}
 	}
 
 	secretLookup := func(name string) (string, bool) {
@@ -239,6 +328,41 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 	respHeaders := maskedHeaders
 	redactedBody := redactor.Text(out.Body)
 
+	// Post-response script: assertions on what came back. It sees the response
+	// exactly as the caller does (secrets masked), so no assertion message can
+	// carry one out. A crash here does not fail the request — it has already
+	// happened — it is reported next to the response instead.
+	if strings.TrimSpace(testSrc) != "" {
+		testRan = true
+		rt, env = sandbox()
+		env.Request = &script.RequestCtx{
+			Method:   method,
+			URL:      safeURL,
+			BodyType: bodyT,
+			Body:     redactor.Text(body),
+			Headers:  script.SortedHeaders(redactedRequestHeaders(redactor, headers)),
+		}
+		env.Response = &script.ResponseCtx{
+			Code:       out.Status,
+			Status:     out.StatusText,
+			DurationMS: out.DurationMS,
+			Body:       redactedBody,
+			Headers:    maskedHeaders,
+			Truncated:  out.Truncated,
+			FinalURL:   redactor.Text(out.FinalURL),
+		}
+		rt.Bind(env)
+		if _, terr := rt.Run("test.js", testSrc); terr != nil {
+			testError = script.ErrorMessage(terr)
+			s.audit(u.Username, "execute.test_script_error", testError)
+		}
+	}
+	if rt != nil {
+		// Captured last: the console output of both phases, in order.
+		scriptLogs = scriptLogTail(logBuf.String())
+		scriptChanged = env.Changed
+	}
+
 	reqSnap := redactor.RequestSnapshot(method, out.FinalURL, maskedHeaders, out.Body)
 	resSnap := redactor.ResponseSnapshot(out.Status, maskedHeaders, out.HistoryBody())
 
@@ -262,7 +386,7 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 		s.Log.Warn("history purge failed", "err", err)
 	}
 
-	ok(w, map[string]any{
+	payload := map[string]any{
 		"status":         out.Status,
 		"status_text":    out.StatusText,
 		"duration_ms":    out.DurationMS,
@@ -274,7 +398,66 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 		// Whether this went through the proxy. The URL itself is not echoed:
 		// it can carry credentials and is admin-only knowledge.
 		"proxied": proxyURL != "",
-	})
+	}
+	if preRan || testRan {
+		// Console output, the variables the scripts wrote and the pm.test results,
+		// so the editor can show what happened. None of it can hold a secret:
+		// scripts never see one.
+		scriptOut := map[string]any{"logs": scriptLogs, "vars": scriptChanged}
+		if tests := rt.Tests(); len(tests) > 0 {
+			scriptOut["tests"] = tests
+		}
+		if testError != "" {
+			scriptOut["test_error"] = testError
+		}
+		payload["script"] = scriptOut
+	}
+	ok(w, payload)
+}
+
+// redactedRequestHeaders masks what the request actually carried, so the
+// post-response script can assert on the sent headers without ever seeing a
+// secret value (it is handed the same text the browser gets).
+func redactedRequestHeaders(redactor *executor.Redactor, headers map[string]string) map[string]string {
+	out := make(map[string]string, len(headers))
+	for k, v := range headers {
+		if _, sensitive := executor.SensitiveHeaders[strings.ToLower(k)]; sensitive {
+			out[k] = "***"
+			continue
+		}
+		out[k] = redactor.Text(v)
+	}
+	return out
+}
+
+// scriptTimeout is the configured pre-request script budget.
+func (s *Server) scriptTimeout() time.Duration {
+	if s.CFG.ScriptTimeout > 0 {
+		return s.CFG.ScriptTimeout
+	}
+	return defaultScriptTimeout
+}
+
+// scriptLogTail trims captured console output to the last few lines/bytes, so a
+// script that logs in a loop cannot bloat the execute response.
+func scriptLogTail(s string) []string {
+	if s == "" {
+		return nil
+	}
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > maxScriptLogLines {
+		dropped := len(lines) - maxScriptLogLines
+		lines = append([]string{"... " + strconv.Itoa(dropped) + " earlier lines dropped ..."},
+			lines[len(lines)-maxScriptLogLines:]...)
+	}
+	total := 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		total += len(lines[i]) + 1
+		if total > maxScriptLogBytes {
+			return append([]string{"... output truncated ..."}, lines[i+1:]...)
+		}
+	}
+	return lines
 }
 
 // settingOr returns the settings value or fallback.

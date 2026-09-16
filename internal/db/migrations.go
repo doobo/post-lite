@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-var migrations = []string{migrationV1, migrationV2, migrationV3, migrationV4}
+var migrations = []string{migrationV1, migrationV2, migrationV3, migrationV4, migrationV5, migrationV6}
 
 const migrationV1 = `
 CREATE TABLE users (
@@ -112,6 +112,19 @@ ALTER TABLE requests ADD COLUMN variables TEXT;
 // Socket.IO / MQTT will extend this column later, no new table needed.
 const migrationV4 = `
 ALTER TABLE requests ADD COLUMN protocol TEXT NOT NULL DEFAULT 'http';
+`
+
+// migrationV5 adds the pre-request script (JS, run in the server-side sandbox
+// before variable resolution). NULL for every existing row = no script, so an
+// upgrade never starts executing anything on its own.
+const migrationV5 = `
+ALTER TABLE requests ADD COLUMN script TEXT;
+`
+
+// migrationV6 adds the post-response script (pm.response assertions / pm.test).
+// Same shape as V5: NULL means "no script" and it is never run implicitly.
+const migrationV6 = `
+ALTER TABLE requests ADD COLUMN test_script TEXT;
 `
 
 func Migrate(db *sql.DB) error {

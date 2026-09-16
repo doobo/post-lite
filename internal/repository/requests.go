@@ -28,6 +28,10 @@ type RequestPayload struct {
 	Body     string `json:"body"`
 	// Variables is the GraphQL variables document (body_type=graphql).
 	Variables string `json:"variables"`
+	// Script is the pre-request JS run server-side before variable resolution.
+	Script string `json:"script"`
+	// TestScript is the post-response JS (pm.test / pm.response assertions).
+	TestScript string `json:"test_script"`
 	// UseProxy routes this request through the admin-configured proxy_url.
 	// Off by default: a proxy is opt-in per request.
 	UseProxy bool `json:"use_proxy"`
@@ -59,12 +63,13 @@ func (p *RequestPayload) QueryPairs() [][2]string {
 
 func (r *Requests) Create(in RequestPayload, owner *int64) (int64, error) {
 	res, err := r.db.Exec(
-		"INSERT INTO requests (collection_id, folder_id, owner_id, name, protocol, method, url, headers, query, body_type, body, variables, use_proxy, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"INSERT INTO requests (collection_id, folder_id, owner_id, name, protocol, method, url, headers, query, body_type, body, variables, script, test_script, use_proxy, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 		in.CollectionID,
 		sql.NullInt64{Valid: in.FolderID != nil, Int64: derefInt64(in.FolderID)},
 		sql.NullInt64{Valid: owner != nil, Int64: derefInt64(owner)},
 		in.Name, orDefault(in.Protocol, "http"), in.Method, in.URL, nullStr(in.Headers), nullStr(in.Query),
-		orDefault(in.BodyType, "none"), nullStr(in.Body), nullStr(in.Variables), boolInt(in.UseProxy), now(),
+		orDefault(in.BodyType, "none"), nullStr(in.Body), nullStr(in.Variables), nullStr(in.Script),
+		nullStr(in.TestScript), boolInt(in.UseProxy), now(),
 	)
 	if err != nil {
 		return 0, err
@@ -76,7 +81,7 @@ func (r *Requests) Get(id int64) (*models.Request, error) {
 	row := r.db.QueryRow(`
 		SELECT id, collection_id, folder_id, owner_id, name, protocol, method, url,
 		       COALESCE(headers,''), COALESCE(query,''), body_type, COALESCE(body,''),
-		       COALESCE(variables,''), use_proxy, updated_at
+		       COALESCE(variables,''), COALESCE(script,''), COALESCE(test_script,''), use_proxy, updated_at
 		FROM requests WHERE id = ?`, id)
 	req, err := scanRequest(row)
 	if err != nil {
@@ -89,7 +94,7 @@ func (r *Requests) List(collectionID int64) ([]*models.Request, error) {
 	rows, err := r.db.Query(`
 		SELECT id, collection_id, folder_id, owner_id, name, protocol, method, url,
 		       COALESCE(headers,''), COALESCE(query,''), body_type, COALESCE(body,''),
-		       COALESCE(variables,''), use_proxy, updated_at
+		       COALESCE(variables,''), COALESCE(script,''), COALESCE(test_script,''), use_proxy, updated_at
 		FROM requests WHERE collection_id = ? ORDER BY id`, collectionID)
 	if err != nil {
 		return nil, err
@@ -110,12 +115,13 @@ func (r *Requests) Update(id int64, in RequestPayload) error {
 	_, err := r.db.Exec(`
 		UPDATE requests
 		SET collection_id=?, folder_id=?, name=?, protocol=?, method=?, url=?, headers=?, query=?, body_type=?, body=?,
-		    variables=?, use_proxy=?, updated_at=?
+		    variables=?, script=?, test_script=?, use_proxy=?, updated_at=?
 		WHERE id=?`,
 		in.CollectionID,
 		sql.NullInt64{Valid: in.FolderID != nil, Int64: derefInt64(in.FolderID)},
 		in.Name, orDefault(in.Protocol, "http"), in.Method, in.URL, nullStr(in.Headers), nullStr(in.Query),
-		orDefault(in.BodyType, "none"), nullStr(in.Body), nullStr(in.Variables), boolInt(in.UseProxy), now(), id,
+		orDefault(in.BodyType, "none"), nullStr(in.Body), nullStr(in.Variables), nullStr(in.Script),
+		nullStr(in.TestScript), boolInt(in.UseProxy), now(), id,
 	)
 	return err
 }
@@ -132,7 +138,8 @@ func scanRequest(row Scanner) (*models.Request, error) {
 	var updatedAt string
 	err := row.Scan(
 		&req.ID, &req.CollectionID, &folder, &owner, &req.Name, &req.Protocol, &req.Method, &req.URL,
-		&req.Headers, &req.Query, &req.BodyType, &req.Body, &req.Variables, &useProxy, &updatedAt,
+		&req.Headers, &req.Query, &req.BodyType, &req.Body, &req.Variables, &req.Script, &req.TestScript,
+		&useProxy, &updatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

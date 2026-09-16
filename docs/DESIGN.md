@@ -429,6 +429,30 @@ make test       # go test ./...
 - [x] 管理操作（用户、Secret、设置、全局 Collection/Environment、SSRF 拦截）写审计日志
 - [x] handler 外层 `withRecover`：panic 变 500 并记日志，不拖垮进程
 
+### 脚本（JS 沙箱）
+
+**前置脚本**
+
+- [x] `internal/script`：goja 运行时 + `BuiltinModule` 注册表，`pm.require('npm:tweetnacl@1.0.3')` /
+      `npm:uuid@9.0.0` 落到 Go 实现，Ed25519 直接用 `crypto/ed25519`（不联网、不装 npm）
+- [x] `pm.crypto.ed25519.sign()` 原生签名 API（`inputEncoding` 默认 utf8、`outputEncoding` 默认 base64）
+- [x] 脚本在变量解析**之前**跑，可改 method / url / headers / body，也可写 `pm.variables`
+- [x] 脚本出错或超时（默认 5s，`-script-timeout`）**直接不发请求**，返回 `400 script_error` / `script_timeout` 并审计
+- [x] 密钥不进沙箱：变量袋里没有 `sec.*`，脚本只能留下 `{{sec.NAME}}` 占位符给服务端解析
+
+**后置测试脚本**
+
+- [x] 两段脚本共用**一个** `goja.Runtime`（前置里写的变量后置还能读到），但只在脚本实际存在时才建
+- [x] `pm.response`：`code` / `status` / `responseTime` / `responseSize` / `headers` / `text()` / `json()`，
+      外加 `to.have.status(...)`、`to.be.ok`、`to.have.jsonBody(...)` 等链式断言
+- [x] `pm.test(name, fn)` + `pm.expect(x).to...`（chai 子集：`equal/eql/deep/above/below/within/include/match/oneOf/`
+      `property/length/empty/null/undefined/true/false/ok/a/an/instanceof/keys/throw`，含 `.not` / `.to.have` 前置词）
+- [x] 旧式 `tests['名字'] = true/false` 也认（迁移过来的 Postman 脚本可原样跑）
+- [x] 断言失败**不影响响应**：响应已经拿到了，掩盖它比暴露它更糟。结果回给前端 `script.tests`，
+      脚本自身抛错则是 `script.test_error`
+- [x] 后置脚本看到的是**脱敏后**的响应文本（和面板里一样），所以断言消息也带不出密钥
+- [x] 只适用于 http 请求（ws/sse 保存脚本会被 `400` 拒绝，不做静默丢弃），非 2xx 响应同样跑
+
 ## 14. 里程碑
 
 **V0.1（已完成）**
@@ -441,10 +465,12 @@ Secret 加密入库、只写不读；执行 GET/POST/PUT/PATCH/DELETE + Headers/
 **V0.2（进行中）**
 
 已落地：主题切换（Light / Dark / Black）、请求删除（admin-only）、HTTP/HTTPS 代理（设置 + 请求级开关）、
-GraphQL 请求类型（query + variables 面板）。
+GraphQL 请求类型（query + variables 面板）、WebSocket / SSE 实时请求（服务端中转）、
+请求前置脚本与后置测试脚本（goja 沙箱 + `pm.require` 内置模块 + `pm.response` / `pm.test`，
+见 `docs/post-lite-script.md`）。
 
-仍在计划内：WebSocket / SSE / Socket.IO / MQTT 请求类型、form-data / 文件上传、
-请求前置后置脚本（JS 沙箱）、团队空间、导出 OpenAPI。
+仍在计划内：Socket.IO / MQTT 请求类型、form-data / 文件上传、`pm.sendRequest`、
+团队空间、导出 OpenAPI。
 （这份清单来自仓库根的 `Task.md`，它不入库，所以实现进度以本节为准。）
 
 WebSocket 的实现路线：V0.2 引入最小 ws 客户端（RFC6455 握手 + 帧编解码，约 200 行标准库代码），
