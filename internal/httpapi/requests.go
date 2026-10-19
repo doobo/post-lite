@@ -248,7 +248,28 @@ func (s *Server) updateRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.CollectionID = rq.CollectionID
-	p.FolderID = rq.FolderID
+	// The editor may move the request into a folder (or back to the root, a nil
+	// folder_id); accept the client's value but verify a non-nil target belongs
+	// to this collection. Overwriting it with the old value here would silently
+	// discard every folder move.
+	if p.FolderID != nil {
+		folders, err := s.Store.Folders.List(rq.CollectionID)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+		found := false
+		for _, f := range folders {
+			if f.ID == *p.FolderID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			fail(w, http.StatusBadRequest, "bad_request", "folder does not belong to this collection")
+			return
+		}
+	}
 	if p.URL == "" {
 		p.URL = rq.URL
 	}

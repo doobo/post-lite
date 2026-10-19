@@ -109,6 +109,15 @@ func newTestServer(t *testing.T, opts ...serverOption) *testServer {
 	return ts
 }
 
+// allowLoopback whitelists 127.0.0.0/8 so tests can reach local echo servers,
+// which the default SSRF policy blocks as internal addresses.
+func (ts *testServer) allowLoopback() {
+	ts.t.Helper()
+	if err := ts.store.Settings.Set("ssrf_whitelist", "127.0.0.0/8"); err != nil {
+		ts.t.Fatalf("set ssrf_whitelist: %v", err)
+	}
+}
+
 // callFrom issues a JSON request from a specific peer address and returns the
 // raw recorder, so tests can inspect response headers and cookies.
 func (ts *testServer) callFrom(method, path, remoteAddr string, cookie *http.Cookie, body any) *httptest.ResponseRecorder {
@@ -433,8 +442,10 @@ func TestExecuteBlocksSSRF(t *testing.T) {
 	ts := newTestServer(t)
 	admin := ts.cookie(ts.createUser("admin", "admin", "pw"))
 
+	// Public addresses are allowed by default now; internal ones are blocked.
 	for _, target := range []string{
-		"http://8.8.8.8/",
+		"http://10.1.2.3/x",
+		"http://127.0.0.1:59875/x",
 		"http://169.254.169.254/latest/meta-data/",
 		"http://[fd00::1]/",
 		"file:///etc/passwd",
@@ -469,6 +480,7 @@ func TestExecuteBlocksSSRF(t *testing.T) {
 // and must be masked in the response, the history snapshot and the database.
 func TestExecuteRedactsInjectedSecret(t *testing.T) {
 	ts := newTestServer(t)
+	ts.allowLoopback()
 	admin := ts.cookie(ts.createUser("admin", "admin", "pw"))
 
 	echo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

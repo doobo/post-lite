@@ -22,13 +22,16 @@ import (
 	"postlite/internal/web"
 )
 
+// version is set at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	var (
 		addr       = flag.String("addr", ":5680", "listen address")
 		dataDir    = flag.String("data", "./data", "data dir (db, master key, certs)")
 		certFile   = flag.String("cert", "", "TLS cert PEM (default: auto self-signed in data dir)")
 		keyFile    = flag.String("key", "", "TLS key PEM (default: auto self-signed in data dir)")
-		plain      = flag.Bool("plain", false, "run plain HTTP (insecure, dev only)")
+		plain      = flag.Bool("plain", true, "run plain HTTP (default); pass -plain=false for HTTPS")
 		timeout    = flag.Duration("timeout", 60*time.Second, "default execution timeout")
 		scriptTO   = flag.Duration("script-timeout", 5*time.Second, "pre-request script timeout")
 		maxHistory = flag.Int("max-history", 1000, "max history rows to keep")
@@ -188,6 +191,8 @@ func registerAPIRoutes(mux *http.ServeMux, s *httpapi.Server) {
 	mux.HandleFunc("POST /api/collections/import", s.ImportCollection)
 	mux.HandleFunc("GET /api/collections/{id}/folders", s.ListFolders)
 	mux.HandleFunc("POST /api/collections/{id}/folders", s.CreateFolder)
+	mux.HandleFunc("PUT /api/collections/{id}/folders/{fid}", s.UpdateFolder)
+	mux.HandleFunc("DELETE /api/collections/{id}/folders/{fid}", s.DeleteFolder)
 
 	// Requests.
 	mux.HandleFunc("GET /api/requests", s.ListRequests)

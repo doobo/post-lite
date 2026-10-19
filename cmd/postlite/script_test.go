@@ -83,6 +83,7 @@ type scriptResponse struct {
 
 func TestPreRequestScriptSignsAndRewritesRequest(t *testing.T) {
 	ts := newTestServer(t)
+	ts.allowLoopback()
 	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
 	up := newScriptUpstream(t)
 
@@ -179,6 +180,7 @@ console.log('signed %s %s', pm.request.method, url);
 // lives on the row, not in the ad-hoc body.
 func TestPreRequestScriptOnStoredRequest(t *testing.T) {
 	ts := newTestServer(t)
+	ts.allowLoopback()
 	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
 	up := newScriptUpstream(t)
 	coll := ts.createCollection(admin, "signed", false)
@@ -229,6 +231,7 @@ func TestPreRequestScriptOnStoredRequest(t *testing.T) {
 // information — the request already happened, so the HTTP status stays 200.
 func TestTestScriptRecordsResults(t *testing.T) {
 	ts := newTestServer(t)
+	ts.allowLoopback()
 	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
 	up := newRecordingUpstream(t, `{"user":{"name":"ada"},"count":2}`)
 
@@ -289,6 +292,7 @@ tests['legacy style'] = pm.response.headers.get('Content-Type') !== null;
 // masked, or an assertion message could ferry it to the browser.
 func TestTestScriptSeesMaskedSecrets(t *testing.T) {
 	ts := newTestServer(t)
+	ts.allowLoopback()
 	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
 	if code, _, raw := ts.call("POST", "/api/secrets", admin,
 		map[string]any{"name": "api_key", "value": scriptTestSecret}); code != http.StatusCreated {
@@ -341,6 +345,7 @@ pm.test('the secret is masked', () => {
 // exists for: a test script copied out of a Postman collection, unmodified.
 func TestMigratedPostmanTestScriptRunsUnchanged(t *testing.T) {
 	ts := newTestServer(t)
+	ts.allowLoopback()
 	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
 	up := newRecordingUpstream(t, `{"user":{"name":"ada"},"roles":["admin","user"]}`)
 
@@ -401,6 +406,7 @@ pm.test("A deliberately failing assertion", function () {
 
 func TestTestScriptCrashIsReportedNotFatal(t *testing.T) {
 	ts := newTestServer(t)
+	ts.allowLoopback()
 	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
 	up := newRecordingUpstream(t, "ok")
 
@@ -425,6 +431,7 @@ func TestTestScriptCrashIsReportedNotFatal(t *testing.T) {
 
 func TestPreRequestScriptErrorBlocksTheRequest(t *testing.T) {
 	ts := newTestServer(t)
+	ts.allowLoopback()
 	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
 	up := newScriptUpstream(t)
 
@@ -477,6 +484,7 @@ func TestPreRequestScriptTimeout(t *testing.T) {
 
 func TestPreRequestScriptVariableOrder(t *testing.T) {
 	ts := newTestServer(t)
+	ts.allowLoopback()
 	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
 	up := newScriptUpstream(t)
 
@@ -500,6 +508,7 @@ func TestPreRequestScriptVariableOrder(t *testing.T) {
 
 func TestPreRequestScriptValidation(t *testing.T) {
 	ts := newTestServer(t)
+	ts.allowLoopback()
 	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
 	coll := ts.createCollection(admin, "scripts", false)
 

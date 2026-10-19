@@ -47,6 +47,7 @@ func (u *recordingUpstream) lastContentType() string {
 
 func TestExecuteGraphQLComposesQueryAndVariables(t *testing.T) {
 	ts := newTestServer(t)
+	ts.allowLoopback()
 	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
 	up := newRecordingUpstream(t, `{"data":{"user":{"name":"ada"}}}`)
 
@@ -94,6 +95,7 @@ func TestExecuteGraphQLComposesQueryAndVariables(t *testing.T) {
 // minimal body.
 func TestStoredGraphQLRequestRoundTrips(t *testing.T) {
 	ts := newTestServer(t)
+	ts.allowLoopback()
 	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
 	colID := ts.createCollection(admin, "gql", false)
 	up := newRecordingUpstream(t, `{"data":null}`)
@@ -163,6 +165,7 @@ func TestStoredGraphQLRequestRoundTrips(t *testing.T) {
 
 func TestExecuteGraphQLRejectsBadVariables(t *testing.T) {
 	ts := newTestServer(t)
+	ts.allowLoopback()
 	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
 	up := newRecordingUpstream(t, `{"data":null}`)
 
@@ -188,6 +191,7 @@ func TestExecuteGraphQLRejectsBadVariables(t *testing.T) {
 
 func TestRequestsRejectUnknownBodyType(t *testing.T) {
 	ts := newTestServer(t)
+	ts.allowLoopback()
 	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
 	colID := ts.createCollection(admin, "types", false)
 

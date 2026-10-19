@@ -40,13 +40,23 @@ func (s *Server) loginKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// loopbackLogin reports whether the client connects from the loopback
+// interface: the machine's own user cannot lock themselves out of a dev
+// instance, and a remote attacker cannot spoof this address (it is taken from
+// the socket, not a header).
+func loopbackLogin(ip string) bool {
+	p := net.ParseIP(ip)
+	return p != nil && p.IsLoopback()
+}
+
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var b loginBody
 	if !decodeBody(w, r, &b) {
 		return
 	}
 	ip := clientIP(r)
-	if s.Limiter != nil && s.Limiter.IsLocked(ip) {
+	limited := s.Limiter != nil && !loopbackLogin(ip)
+	if limited && s.Limiter.IsLocked(ip) {
 		fail(w, http.StatusTooManyRequests, "rate_limited", "too many failed attempts, locked for 15 minutes")
 		return
 	}
@@ -69,20 +79,20 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 
 	u, err := s.Store.Users.GetByUsername(b.Username)
 	if err != nil || !u.Enabled {
-		if s.Limiter != nil {
+		if limited {
 			s.Limiter.NoteFail(ip)
 		}
 		fail(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
 		return
 	}
 	if !auth.VerifyPassword(password, u.PasswordHash, u.Salt) {
-		if s.Limiter != nil {
+		if limited {
 			s.Limiter.NoteFail(ip)
 		}
 		fail(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
 		return
 	}
-	if s.Limiter != nil {
+	if limited {
 		s.Limiter.Reset(ip)
 	}
 

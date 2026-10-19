@@ -365,7 +365,11 @@ function renderTree() {
       const fCollapsed = !!state.treeCollapsed['fold-' + f.id];
       let h = '<div class="node fold' + (fCollapsed ? ' collapsed' : '') + '" data-node="fold-' + f.id + '"'
         + ' style="padding-left:' + (10 + depth * 13) + 'px" onclick="toggleTree(event,\'fold-' + f.id + '\')">'
-        + '<span class="caret">' + (kids ? '▾' : '·') + '</span><span class="name">' + esc(f.name) + '</span></div>';
+        + '<span class="caret">' + (kids ? '▾' : '·') + '</span><span class="name">' + esc(f.name) + '</span>'
+        + '<span class="node-actions">'
+        + '<button class="ghost mini" onclick="renameFolder(event,' + c.id + ',' + f.id + ',\'' + escAttr(f.name) + '\')" title="Rename folder">✎</button>'
+        + '<button class="ghost mini" onclick="deleteFolder(event,' + c.id + ',' + f.id + ')" title="Delete folder (requests move to the collection root)">✕</button>'
+        + '</span></div>';
       if (!kids) return h;
       let sub = '';
       (reqByFolder[String(f.id)] || []).forEach((r) => { sub += reqRow(r, depth + 1); });
@@ -427,6 +431,27 @@ async function createFolderPrompt(collId) {
   const name = await askInput('New folder', 'Folder name', '', { placeholder: 'e.g. auth' });
   if (!name) return;
   await api('/collections/' + collId + '/folders', { method: 'POST', body: { name: name } });
+  await loadCollections();
+  renderCollections();
+}
+
+// renameFolder / deleteFolder are triggered from buttons inside a clickable
+// tree node, so they must stop the event or the node toggles collapse too.
+async function renameFolder(ev, collId, folderId, currentName) {
+  if (ev) ev.stopPropagation();
+  const name = await askInput('Rename folder', 'Folder name', currentName);
+  if (!name || name === currentName) return;
+  await api('/collections/' + collId + '/folders/' + folderId, { method: 'PUT', body: { name: name } });
+  await loadCollections();
+  renderCollections();
+}
+
+async function deleteFolder(ev, collId, folderId) {
+  if (ev) ev.stopPropagation();
+  const okd = await askConfirm('Delete folder',
+    'Folder #' + folderId + ' is removed. Its requests move back to the collection root, subfolders are deleted.', 'Delete');
+  if (!okd) return;
+  await api('/collections/' + collId + '/folders/' + folderId, { method: 'DELETE' });
   await loadCollections();
   renderCollections();
 }
@@ -652,7 +677,7 @@ async function renderEditor() {
     + ['http', 'ws', 'sse'].map((p) => '<button class="tab' + (state.proto === p ? ' active' : '') + '"'
       + ' onclick="setProto(\'' + p + '\')">' + (p === 'http' ? 'HTTP' : p === 'ws' ? 'WebSocket' : 'SSE') + '</button>').join('')
     + '</div>'
-    + '<div class="row">'
+    + '<div class="row sticky-actions">'
     + '<select id="req-method" class="' + methodClass(c.method) + '" onchange="updateMethodColor()">'
     + ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => '<option' + (c.method === m ? ' selected' : '') + '>' + m + '</option>').join('')
     + '</select>'
@@ -1099,6 +1124,7 @@ async function sendRequest() {
   $('#result').innerHTML = '<div class="notice"><span class="spinner dark"></span><span>Waiting for the server-side request…</span></div>';
   try {
     state.results = await api('/execute', { method: 'POST', body: body });
+    state.resPretty = false;
     $('#send-status').textContent = '';
     renderResult();
   } catch (e) {
@@ -1141,6 +1167,7 @@ function renderResult() {
     + (tests.length ? '<span class="sep">·</span><span class="pill ' + (testsFailed ? 'status-4xx' : 'status-2xx') + '">'
       + (tests.length - testsFailed) + '/' + tests.length + ' tests</span>' : '') + '</span>'
     + '<span class="spacer"></span>'
+    + (parsedJSON(d.body) ? '<button class="ghost" onclick="togglePretty()" title="Pretty-print or minify the JSON body">' + (state.resPretty ? 'Raw' : 'Format') + '</button>' : '')
     + '<button class="ghost" onclick="copyResponse()" title="Copy the response body">Copy</button>'
     + '</div>';
   if (d.final_url) html += '<div class="meta-line"><span>final URL</span><code>' + esc(d.final_url) + '</code></div>';
@@ -1154,9 +1181,10 @@ function renderResult() {
   // The Script tab shows up whenever a script ran, logs or not: an empty log is
   // information too ("it ran and printed nothing").
   const hasScript = !!d.script;
+  const shownBody = (state.resPretty && parsedJSON(d.body)) ? JSON.stringify(parsedJSON(d.body), null, 2) : (d.body || '');
   html += '<div class="tabs">' + resTab('body', 'Body') + resTab('headers', 'Headers')
     + (hasScript ? resTab('script', 'Script') : '') + '</div>'
-    + resPanel('body', '<pre>' + esc(d.body || '') + '</pre>')
+    + resPanel('body', '<pre>' + esc(shownBody) + '</pre>')
     + resPanel('headers', '<pre>' + esc(headerLines) + '</pre>')
     + (hasScript ? resPanel('script', renderScriptPanel(d.script)) : '')
     + '</div>';
@@ -1220,7 +1248,29 @@ async function copyText(text, what) {
   }
 }
 
-function copyResponse() { copyText((state.results && state.results.body) || '', 'response body'); }
+// parsedJSON returns the parsed value when the text is a JSON object or array,
+// null otherwise (plain text, HTML, malformed JSON — no Format button then).
+function parsedJSON(text) {
+  if (!text) return null;
+  try {
+    const v = JSON.parse(text);
+    if (v && typeof v === 'object') return v;
+  } catch (e) { /* not JSON */ }
+  return null;
+}
+
+function togglePretty() {
+  state.resPretty = !state.resPretty;
+  renderResult();
+}
+
+function copyResponse() {
+  const d = state.results;
+  if (!d) return;
+  const parsed = parsedJSON(d.body);
+  const text = (parsed && state.resPretty) ? JSON.stringify(parsed, null, 2) : (d.body || '');
+  copyText(text, 'response body');
+}
 
 /* ---------- environments ---------- */
 
@@ -1341,14 +1391,23 @@ async function renderHistory() {
       + '<td><button class="ghost" onclick="viewHistory(' + h.id + ')">View</button> '
       + '<button class="danger" onclick="deleteHistory(' + h.id + ')">Delete</button></td></tr>';
   });
-  html += '</table><div id="hist-detail"></div></div>';
+  html += '</table></div>';
   $('#content').innerHTML = html;
 }
 
 async function viewHistory(id) {
   const h = await api('/history/' + id);
-  $('#hist-detail').innerHTML = '<h3>Request #' + id + '</h3><pre>' + esc(h.req_redacted || '') + '</pre>'
-    + '<h3>Response</h3><pre>' + esc(h.res_redacted || '') + '</pre>';
+  $('#hist-modal-title').textContent = 'History #' + h.id + ' — ' + h.method + ' ' + (h.url || '');
+  $('#hist-modal-meta').textContent =
+    'status ' + h.status + ' · ' + h.duration_ms + ' ms · ' + (h.created_at || '');
+  $('#hist-modal-req').textContent = h.req_redacted || '(no request snapshot)';
+  $('#hist-modal-res').textContent = h.res_redacted || '(no response snapshot)';
+  $('#hist-modal').hidden = false;
+  $('#hist-modal .ghost').focus();
+}
+
+function closeHistModal() {
+  $('#hist-modal').hidden = true;
 }
 
 async function deleteHistory(id) {
@@ -1433,7 +1492,7 @@ async function renderSettings() {
   const s = await api('/settings');
   $('#content').innerHTML = '<div class="card"><h2>Settings</h2>'
     + '<div class="col">'
-    + '<label>SSRF whitelist (CIDRs)<input id="set-whitelist" style="width:100%" value="' + escAttr(s.ssrf_whitelist || '') + '"></label>'
+    + '<label>SSRF whitelist (internal CIDRs allowed)<input id="set-whitelist" style="width:100%" placeholder="e.g. 10.0.0.0/8,192.168.0.0/16 (empty = block internal, allow public)" value="' + escAttr(s.ssrf_whitelist || '') + '"></label>'
     + '<label>Execution timeout (e.g. 60s, 2m)<input id="set-timeout" value="' + escAttr(s.exec_timeout || '') + '"></label>'
     + '<label>History retention (rows)<input id="set-maxhist" value="' + escAttr(s.max_history || '') + '"></label>'
     + '<label>Proxy URL <input id="set-proxy" style="width:100%" placeholder="http://10.0.0.9:3128 (empty = direct)" value="' + escAttr(s.proxy_url || '') + '"></label>'
@@ -1469,6 +1528,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const reason = ev.reason;
     flash('failed: ' + ((reason && reason.message) || reason), true);
     ev.preventDefault();
+  });
+  // History modal: Escape and a backdrop click close it.
+  window.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && !$('#hist-modal').hidden) closeHistModal();
+  });
+  $('#hist-modal').addEventListener('click', (ev) => {
+    if (ev.target === $('#hist-modal')) closeHistModal();
   });
   $('#theme-select').addEventListener('change', (ev) => applyTheme(ev.target.value));
   $('#login-form').addEventListener('submit', async (ev) => {

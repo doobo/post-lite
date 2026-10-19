@@ -128,6 +128,16 @@ func (wl whitelist) contains(ip net.IP) bool {
 	return false
 }
 
+// isInternal reports whether the IP points into networks a request from this
+// server must not reach by default: private ranges, loopback, link-local
+// (cloud metadata), ULA, multicast and the unspecified address. These are the
+// classic SSRF targets; everything else — the public internet — is allowed
+// without any configuration.
+func isInternal(ip net.IP) bool {
+	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified()
+}
+
 // ParseWhitelist parses a comma-separated CIDR list.
 func ParseWhitelist(s string) ([]net.IPNet, error) {
 	var out []net.IPNet
@@ -245,10 +255,16 @@ func checkTarget(ctx context.Context, raw string, wl whitelist) error {
 	if err != nil {
 		return err
 	}
+	// Policy: public addresses are always allowed; internal (private, loopback,
+	// link-local, ...) addresses are blocked unless the whitelist explicitly
+	// contains them. Domains need no configuration to be reachable.
+	blocked := func(ip net.IP) bool {
+		return isInternal(ip) && !wl.contains(ip)
+	}
 	host := u.Hostname()
 	// If the host is already an IP, check it directly.
 	if ip := net.ParseIP(host); ip != nil {
-		if !wl.contains(ip) {
+		if blocked(ip) {
 			return fmt.Errorf("%w: %s outside whitelist", ErrSSRF, host)
 		}
 		return nil
@@ -263,7 +279,7 @@ func checkTarget(ctx context.Context, raw string, wl whitelist) error {
 	}
 	var bad []string
 	for _, a := range addrs {
-		if !wl.contains(a.IP) {
+		if blocked(a.IP) {
 			bad = append(bad, a.IP.String())
 		}
 	}

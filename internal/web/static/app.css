@@ -323,6 +323,18 @@ header .theme-select { padding: 4px 8px; font-size: 12.5px; }
 button.solid-danger { background: var(--err); border-color: var(--err); color: var(--danger-text); font-weight: 600; }
 button.solid-danger:hover { background: var(--danger-hover); border-color: var(--danger-hover); }
 
+/* history detail modal: wider than the prompt dialog, scrollable body */
+.hist-modal {
+  width: 100%; max-width: 860px; max-height: 86vh;
+  display: flex; flex-direction: column; gap: 6px;
+  box-shadow: 0 24px 60px var(--shadow-lg);
+  overflow: hidden;
+}
+.hist-modal .hist-pre {
+  margin: 0; max-height: 34vh; overflow: auto;
+  font-size: 12px; line-height: 1.45;
+}
+
 .cols {
   display: grid;
   grid-template-columns: 268px 1fr;
@@ -356,7 +368,7 @@ nav button.active .navico { color: var(--accent); }
 .navico { width: 16px; height: 16px; flex: none; color: var(--navico); }
 .navsep { height: 1px; background: var(--border); margin: 8px 4px; }
 
-main { padding: 18px; overflow-x: auto; min-width: 0; }
+main { padding: 18px; overflow-x: clip; min-width: 0; }
 
 /* ---------- collection tree ---------- */
 
@@ -376,6 +388,13 @@ main { padding: 18px; overflow-x: auto; min-width: 0; }
 .tree .collapsed > .caret { transform: rotate(-90deg); }
 .tree .coll { font-weight: 600; }
 .tree .fold { color: var(--muted); }
+.tree .node-actions { margin-left: auto; display: none; gap: 2px; }
+.tree .node:hover .node-actions { display: inline-flex; }
+.tree button.mini {
+  padding: 0 4px; font-size: 11px; line-height: 16px; border: none;
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.tree button.mini:hover { color: var(--text); }
 .tree .req .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree .empty { padding: 8px; color: var(--muted); }
 
@@ -555,3 +574,22 @@ details summary strong { color: var(--text); }
   .kvrow .k { width: 40%; }
   .grid2 { grid-template-columns: 1fr; }
 }
+
+/* Editor action row (method/URL/Send/Save): stays visible under the sticky
+   header while the response body is scrolled. */
+.sticky-actions {
+  position: sticky;
+  top: var(--header-h);
+  z-index: 15;
+  margin: -16px -16px 12px;
+  padding: 10px 16px 6px;
+  background: var(--panel);
+}
+
+/* thin, unobtrusive scrollbars */
+* { scrollbar-width: thin; scrollbar-color: var(--border2) transparent; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+::-webkit-scrollbar-corner { background: transparent; }

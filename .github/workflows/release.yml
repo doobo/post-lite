@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
+          LDFLAGS="-s -w -X main.version=${GITHUB_REF_NAME}"
+          mkdir -p dist
+          go build -trimpath -ldflags="$LDFLAGS" -o "dist/postlite-${VERSION}-${GOOS}-${GOARCH}${EXT}" ./cmd/postlite
+          go build -trimpath -ldflags="$LDFLAGS" -o "dist/pwreset-${VERSION}-${GOOS}-${GOARCH}${EXT}" ./cmd/pwreset
+
+      - name: Package
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          STAMP="$(date -u +%Y%m%d)"
+          NAME="postlite-${VERSION}-${GOOS}-${GOARCH}"
+          cd dist
+          if [ "$GOOS" = "windows" ]; then
+            zip "${NAME}-${STAMP}.zip" *-"${GOOS}"-"${GOARCH}"*
+          else
+            chmod +x *-"${GOOS}"-"${GOARCH}"*
+            tar czf "${NAME}-${STAMP}.tar.gz" *-"${GOOS}"-"${GOARCH}"*
+          fi
+          rm -f *-"${GOOS}"-"${GOARCH}"*
+
+      - name: Compute checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum *.tar.gz *.zip > checksums.txt 2>/dev/null || sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+
+  release:
+    name: Create release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Merge checksums
+        shell: bash
+        run: |
+          cd dist
+          rm -f checksums.txt
+          sha256sum *.tar.gz *.zip > checksums.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt

@@ -121,8 +121,9 @@ func TestExecuteRoutesThroughTheConfiguredProxy(t *testing.T) {
 		t.Fatalf("configure proxy_url = %d (%s)", code, raw)
 	}
 
-	// The host does not resolve here at all: only the proxy can reach it.
-	const target = "http://only-the-proxy-knows.invalid/thing"
+	// The host is an internal address blocked by the default SSRF policy:
+	// only the proxy can reach it.
+	const target = "http://10.255.255.1/thing"
 	code, resp, raw := ts.call("POST", "/api/execute", admin, map[string]any{
 		"ad_hoc": map[string]any{"method": "GET", "url": target, "use_proxy": true},
 	})
@@ -141,7 +142,7 @@ func TestExecuteRoutesThroughTheConfiguredProxy(t *testing.T) {
 		t.Error("response.proxied = false, want true")
 	}
 	seen := proxy.requests()
-	if len(seen) != 1 || !strings.Contains(seen[0], "only-the-proxy-knows.invalid/thing") {
+	if len(seen) != 1 || !strings.Contains(seen[0], "10.255.255.1/thing") {
 		t.Fatalf("proxy saw %v, want one absolute URL for the target", seen)
 	}
 

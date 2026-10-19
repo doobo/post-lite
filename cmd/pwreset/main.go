@@ -32,6 +32,9 @@ import (
 // auditLimit matches the cap the server keeps in settings.audit_log.
 const auditLimit = 500
 
+// version is set at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	dataDir := flag.String("data", "./data", "PostLite data directory (holds postlite.db, master.key, certs)")
 	user := flag.String("user", "admin", "username whose password to reset")

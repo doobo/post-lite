@@ -130,7 +130,14 @@ func (r *Folders) List(collectionID int64) ([]*models.Folder, error) {
 	return out, rows.Err()
 }
 
+func (r *Folders) Rename(id int64, name string) error {
+	_, err := r.db.Exec("UPDATE folders SET name = ? WHERE id = ?", name, id)
+	return err
+}
+
 func (r *Folders) Delete(id int64) error {
+	// subfolders cascade (parent_id ON DELETE CASCADE); requests keep existing
+	// with folder_id set NULL (folder_id ON DELETE SET NULL).
 	_, err := r.db.Exec("DELETE FROM folders WHERE id = ?", id)
 	return err
 }

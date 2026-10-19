@@ -94,6 +94,23 @@
   </form>
 </div>
 
+<!-- History detail: a wide modal so the request/response snapshots can be
+     scanned without leaving the list. -->
+<div id="hist-modal" class="dialog-wrap" hidden>
+  <div class="card hist-modal" role="dialog" aria-modal="true" aria-labelledby="hist-modal-title">
+    <div class="row">
+      <h2 id="hist-modal-title" style="margin:0"></h2>
+      <span class="spacer"></span>
+      <button type="button" class="ghost" onclick="closeHistModal()">Close</button>
+    </div>
+    <p id="hist-modal-meta" class="muted" style="margin:0;font-size:13px"></p>
+    <h3 style="margin:4px 0 2px">Request</h3>
+    <pre id="hist-modal-req" class="hist-pre"></pre>
+    <h3 style="margin:8px 0 2px">Response</h3>
+    <pre id="hist-modal-res" class="hist-pre"></pre>
+  </div>
+</div>
+
 <!-- loginenc.js is the pure-JS RSA-OAEP fallback for the login handshake; it only
      runs where crypto.subtle is missing (plain HTTP, i.e. no secure context). -->
 <script src="/loginenc.js"></script>

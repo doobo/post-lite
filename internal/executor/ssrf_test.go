@@ -54,17 +54,20 @@ func TestCheckTarget(t *testing.T) {
 		wl      string
 		wantErr bool
 	}{
-		{"private ip allowed", "http://10.1.2.3/api", "10.0.0.0/8", false},
-		{"loopback allowed", "http://127.0.0.1:8080/api", "127.0.0.0/8", false},
-		{"public ip blocked", "http://8.8.8.8/", "10.0.0.0/8", true},
-		{"cloud metadata blocked", "http://169.254.169.254/latest/meta-data/", "10.0.0.0/8", true},
-		{"ipv6 outside blocked", "http://[fd00::1]/", "10.0.0.0/8", true},
-		{"scheme file blocked", "file:///etc/passwd", "10.0.0.0/8", true},
+		{"public ip allowed without whitelist", "http://8.8.8.8/", "", false},
+		{"private ip blocked without whitelist", "http://10.1.2.3/api", "", true},
+		{"loopback blocked without whitelist", "http://127.0.0.1:8080/api", "", true},
+		{"cloud metadata blocked without whitelist", "http://169.254.169.254/latest/meta-data/", "", true},
+		{"ipv6 ula blocked without whitelist", "http://[fd00::1]/", "", true},
+		{"private ip allowed when whitelisted", "http://10.1.2.3/api", "10.0.0.0/8", false},
+		{"loopback allowed when whitelisted", "http://127.0.0.1:8080/api", "127.0.0.0/8", false},
+		{"cloud metadata blocked even when another range whitelisted", "http://169.254.169.254/latest/meta-data/", "10.0.0.0/8", true},
+		{"scheme file blocked", "file:///etc/passwd", "127.0.0.0/8", true},
 		{"scheme ftp blocked", "ftp://10.1.2.3/x", "10.0.0.0/8", true},
 		{"schemeless blocked", "10.1.2.3:8080/x", "10.0.0.0/8", true},
 		{"missing host blocked", "http:///x", "10.0.0.0/8", true},
-		{"hostname outside blocked", "http://localhost:9/x", "10.0.0.0/8", true},
-		{"hostname inside allowed", "http://localhost:9/x", "127.0.0.0/8,::1/128", false},
+		{"loopback hostname blocked without whitelist", "http://localhost:9/x", "", true},
+		{"loopback hostname allowed when whitelisted", "http://localhost:9/x", "127.0.0.0/8,::1/128", false},
 	}
 
 	for _, tc := range cases {
@@ -89,13 +92,13 @@ func TestCheckTarget(t *testing.T) {
 	}
 }
 
-func TestExecuteBlocksNonWhitelistedTarget(t *testing.T) {
+func TestExecuteBlocksInternalTarget(t *testing.T) {
 	ex := NewExecutor(5 * time.Second)
 	_, err := ex.Execute(context.Background(), In{
 		Method:  "GET",
 		URL:     "http://169.254.169.254/latest/meta-data/",
 		Timeout: 2 * time.Second,
-	}, mustWhitelist(t, "10.0.0.0/8"))
+	}, nil)
 	if !errors.Is(err, ErrSSRF) {
 		t.Fatalf("Execute error = %v, want an ErrSSRF-wrapped error", err)
 	}
@@ -216,9 +219,9 @@ func TestExecuteFollowsWhitelistedRedirectWhenEnabled(t *testing.T) {
 }
 
 func TestExecuteRevalidatesRedirectTarget(t *testing.T) {
-	// The redirect target is outside the whitelist, so the hop must be blocked
-	// before any connection is attempted.
-	srv := newRedirectServer(t, "http://8.8.8.8/")
+	// The redirect target is an internal address outside the whitelist, so the
+	// hop must be blocked before any connection is attempted.
+	srv := newRedirectServer(t, "http://10.9.9.9/")
 	ex := NewExecutor(5 * time.Second)
 
 	_, err := ex.Execute(context.Background(), In{

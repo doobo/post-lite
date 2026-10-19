@@ -270,6 +270,17 @@ func TestLoginRateLimiting(t *testing.T) {
 			ts.encryptedLogin(t, ip, user, pw))
 	}
 
+	// Loopback is exempt: the local user can never lock themselves out, so even
+	// repeated failures must not produce a 429.
+	for i := 0; i < 8; i++ {
+		if rec := login("127.0.0.1:5000", "alice", "not-the-password"); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("loopback failure %d = %d, want 401 (never rate limited)", i+1, rec.Code)
+		}
+	}
+	if rec := login("127.0.0.1:5000", "alice", loginPassword); rec.Code != http.StatusOK {
+		t.Fatalf("loopback login after 8 failures = %d, want 200", rec.Code)
+	}
+
 	// A wrong password and an unknown account must be indistinguishable.
 	badPw := login(ipA, "alice", "not-the-password")
 	noUser := login(ipB, "nobody", "not-the-password")
@@ -606,9 +617,8 @@ func TestSettingsDefaultsAndValidation(t *testing.T) {
 	}
 	var defaults map[string]string
 	resp.decode(t, &defaults)
-	if !strings.Contains(defaults["ssrf_whitelist"], "10.0.0.0/8") ||
-		!strings.Contains(defaults["ssrf_whitelist"], "127.0.0.0/8") {
-		t.Errorf("default ssrf_whitelist = %q, want the private CIDRs", defaults["ssrf_whitelist"])
+	if defaults["ssrf_whitelist"] != "" {
+		t.Errorf("default ssrf_whitelist = %q, want empty (public allowed, internal blocked)", defaults["ssrf_whitelist"])
 	}
 	if defaults["exec_timeout"] != ts.cfg.Timeout.String() {
 		t.Errorf("default exec_timeout = %q, want %q", defaults["exec_timeout"], ts.cfg.Timeout.String())
@@ -798,5 +808,157 @@ func TestSettingsTakeEffect(t *testing.T) {
 	}
 	if resp.Error == nil || !strings.Contains(resp.Error.Message, "ssrf_whitelist") {
 		t.Errorf("error = %+v, want it to name the bad setting", resp.Error)
+	}
+}
+
+// TestFolderRenameAndDelete pins the folder lifecycle: a rename sticks, a
+// delete moves its requests back to the collection root and cascades into
+// subfolders, and both require collection-manager rights.
+func TestFolderRenameAndDelete(t *testing.T) {
+	ts := newTestServer(t)
+	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
+	bob := ts.cookie(ts.createUser("bob", "user", loginPassword))
+
+	colID := ts.createCollection(admin, "folders", false)
+	fid := mustFolder(t, ts, admin, colID, nil, "auth")
+	mustFolder(t, ts, admin, colID, &fid, "oauth") // subfolder: must cascade on delete
+	reqID := mustRequest(t, ts, admin, map[string]any{
+		"collection_id": colID, "folder_id": fid,
+		"name": "in-folder", "method": "GET", "url": "http://example.test/",
+	})
+
+	// A non-manager cannot rename or delete.
+	for _, tc := range []struct{ method, path string }{
+		{"PUT", "/api/collections/" + idStr(colID) + "/folders/" + idStr(fid)},
+		{"DELETE", "/api/collections/" + idStr(colID) + "/folders/" + idStr(fid)},
+	} {
+		if code, _, _ := ts.call(tc.method, tc.path, bob, map[string]any{"name": "x"}); code != http.StatusForbidden {
+			t.Errorf("non-manager %s = %d, want 403", tc.method, code)
+		}
+	}
+
+	// A folder from another collection is not reachable through this path.
+	other := ts.createCollection(admin, "other", false)
+	if code, _, raw := ts.call("PUT", "/api/collections/"+idStr(other)+"/folders/"+idStr(fid), admin,
+		map[string]any{"name": "x"}); code != http.StatusNotFound {
+		t.Errorf("rename via wrong collection = %d, want 404 (%s)", code, raw)
+	}
+
+	// Rename works and shows up in the list.
+	if code, _, raw := ts.call("PUT", "/api/collections/"+idStr(colID)+"/folders/"+idStr(fid), admin,
+		map[string]any{"name": "authentication"}); code != http.StatusOK {
+		t.Fatalf("rename folder = %d (%s)", code, raw)
+	}
+	code, resp, raw := ts.call("GET", "/api/collections/"+idStr(colID)+"/folders", admin, nil)
+	if code != http.StatusOK {
+		t.Fatalf("list folders = %d (%s)", code, raw)
+	}
+	var folders []struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	resp.decode(t, &folders)
+	found := false
+	for _, f := range folders {
+		if f.ID == fid {
+			found = f.Name == "authentication"
+		}
+	}
+	if !found {
+		t.Errorf("renamed folder missing or stale in %s (%v)", raw, folders)
+	}
+
+	// Empty name is refused.
+	if code, _, _ := ts.call("PUT", "/api/collections/"+idStr(colID)+"/folders/"+idStr(fid), admin,
+		map[string]any{"name": ""}); code != http.StatusBadRequest {
+		t.Errorf("rename with empty name = %d, want 400", code)
+	}
+
+	// Delete cascades into the subfolder and pushes requests back to the root.
+	if code, _, raw := ts.call("DELETE", "/api/collections/"+idStr(colID)+"/folders/"+idStr(fid), admin, nil); code != http.StatusOK {
+		t.Fatalf("delete folder = %d (%s)", code, raw)
+	}
+	code, resp, raw = ts.call("GET", "/api/collections/"+idStr(colID), admin, nil)
+	if code != http.StatusOK {
+		t.Fatalf("get collection = %d (%s)", code, raw)
+	}
+	var d struct {
+		Folders  []*struct{ ID int64 `json:"id"` } `json:"folders"`
+		Requests []*struct {
+			ID       int64  `json:"id"`
+			FolderID *int64 `json:"folder_id"`
+		} `json:"requests"`
+	}
+	resp.decode(t, &d)
+	if len(d.Folders) != 0 {
+		t.Errorf("folders after delete = %v, want none (subfolder must cascade)", d.Folders)
+	}
+	if len(d.Requests) != 1 || d.Requests[0].ID != reqID || d.Requests[0].FolderID != nil {
+		t.Errorf("requests after delete = %+v, want the request kept at the collection root", d.Requests)
+	}
+}
+
+// TestSaveRequestIntoFolder pins the folder-move path: creating with folder_id
+// puts the request in the folder, and an update may move it between folders and
+// back to the root — while a folder from another collection is refused.
+func TestSaveRequestIntoFolder(t *testing.T) {
+	ts := newTestServer(t)
+	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
+
+	colID := ts.createCollection(admin, "moves", false)
+	f1 := mustFolder(t, ts, admin, colID, nil, "f1")
+	f2 := mustFolder(t, ts, admin, colID, nil, "f2")
+	other := ts.createCollection(admin, "other", false)
+	otherFolder := mustFolder(t, ts, admin, other, nil, "elsewhere")
+
+	reqID := mustRequest(t, ts, admin, map[string]any{
+		"collection_id": colID, "folder_id": f1,
+		"name": "mover", "method": "GET", "url": "http://example.test/",
+	})
+
+	getFolder := func() *int64 {
+		t.Helper()
+		code, resp, raw := ts.call("GET", "/api/requests/"+idStr(reqID), admin, nil)
+		if code != http.StatusOK {
+			t.Fatalf("get request = %d (%s)", code, raw)
+		}
+		var rq struct {
+			FolderID *int64 `json:"folder_id"`
+		}
+		resp.decode(t, &rq)
+		return rq.FolderID
+	}
+
+	if got := getFolder(); got == nil || *got != f1 {
+		t.Errorf("folder after create = %v, want %d", got, f1)
+	}
+
+	// Move to another folder in the same collection.
+	if code, _, raw := ts.call("PUT", "/api/requests/"+idStr(reqID), admin,
+		map[string]any{"name": "mover", "method": "GET", "url": "http://example.test/", "folder_id": f2}); code != http.StatusOK {
+		t.Fatalf("move request to folder %d = %d (%s)", f2, code, raw)
+	}
+	if got := getFolder(); got == nil || *got != f2 {
+		t.Errorf("folder after move = %v, want %d", got, f2)
+	}
+
+	// Move back to the root (null folder_id).
+	if code, _, raw := ts.call("PUT", "/api/requests/"+idStr(reqID), admin,
+		map[string]any{"name": "mover", "method": "GET", "url": "http://example.test/", "folder_id": nil}); code != http.StatusOK {
+		t.Fatalf("move request to root = %d (%s)", code, raw)
+	}
+	if got := getFolder(); got != nil {
+		t.Errorf("folder after root move = %v, want nil", got)
+	}
+
+	// A folder from another collection is refused, not silently applied.
+	if code, resp, raw := ts.call("PUT", "/api/requests/"+idStr(reqID), admin,
+		map[string]any{"name": "mover", "method": "GET", "url": "http://example.test/", "folder_id": otherFolder}); code != http.StatusBadRequest {
+		t.Errorf("move request to a foreign folder = %d, want 400 (%s)", code, raw)
+	} else if resp.Error == nil {
+		t.Errorf("foreign-folder move carried no error")
+	}
+	if got := getFolder(); got != nil {
+		t.Errorf("folder after refused move = %v, want nil (unchanged)", got)
 	}
 }

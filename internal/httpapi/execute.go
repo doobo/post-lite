@@ -52,7 +52,9 @@ type executeBody struct {
 }
 
 // defaultWhitelist is used when the "ssrf_whitelist" setting is empty.
-const defaultWhitelist = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8"
+// Empty means: public addresses are allowed, internal addresses (private,
+// loopback, link-local, ...) are blocked unless listed here.
+const defaultWhitelist = ""
 
 func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 	u, okd := s.requireUser(w, r)
@@ -363,7 +365,7 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 		scriptChanged = env.Changed
 	}
 
-	reqSnap := redactor.RequestSnapshot(method, out.FinalURL, maskedHeaders, out.Body)
+	reqSnap := redactor.RequestSnapshot(method, out.FinalURL, maskedHeaders, redactor.Text(body))
 	resSnap := redactor.ResponseSnapshot(out.Status, maskedHeaders, out.HistoryBody())
 
 	var storedReqID *int64

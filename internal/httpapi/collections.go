@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"postlite/internal/models"
 	"postlite/internal/repository"
 )
 
@@ -211,6 +212,85 @@ func (s *Server) createFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	okStatus(w, http.StatusCreated, map[string]any{"id": fid})
+}
+
+// folderOf loads the folder and checks it belongs to the collection; okid
+// reports whether the :fid path param parsed.
+func (s *Server) folderOf(w http.ResponseWriter, r *http.Request, u models.User, collID int64) (*models.Folder, bool) {
+	fid, okid := idParam(w, r, "fid")
+	if !okid {
+		return nil, false
+	}
+	folders, err := s.Store.Folders.List(collID)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "internal", err.Error())
+		return nil, false
+	}
+	for _, f := range folders {
+		if f.ID == fid {
+			return f, true
+		}
+	}
+	fail(w, http.StatusNotFound, "not_found", "folder not found in this collection")
+	return nil, false
+}
+
+func (s *Server) UpdateFolder(w http.ResponseWriter, r *http.Request) {
+	u, okd := s.requireUser(w, r)
+	if !okd {
+		return
+	}
+	cid, okid := idParam(w, r, "id")
+	if !okid {
+		return
+	}
+	c, err := s.Store.Collections.Get(cid)
+	if err != nil || !s.Store.Collections.CanManage(u, c) {
+		fail(w, http.StatusForbidden, "forbidden", "cannot manage this collection")
+		return
+	}
+	f, okf := s.folderOf(w, r, u, cid)
+	if !okf {
+		return
+	}
+	var b folderBody
+	if !decodeBody(w, r, &b) {
+		return
+	}
+	if b.Name == "" {
+		fail(w, http.StatusBadRequest, "bad_request", "name is required")
+		return
+	}
+	if err := s.Store.Folders.Rename(f.ID, b.Name); err != nil {
+		fail(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	ok(w, map[string]any{"id": f.ID, "name": b.Name})
+}
+
+func (s *Server) DeleteFolder(w http.ResponseWriter, r *http.Request) {
+	u, okd := s.requireUser(w, r)
+	if !okd {
+		return
+	}
+	cid, okid := idParam(w, r, "id")
+	if !okid {
+		return
+	}
+	c, err := s.Store.Collections.Get(cid)
+	if err != nil || !s.Store.Collections.CanManage(u, c) {
+		fail(w, http.StatusForbidden, "forbidden", "cannot manage this collection")
+		return
+	}
+	f, okf := s.folderOf(w, r, u, cid)
+	if !okf {
+		return
+	}
+	if err := s.Store.Folders.Delete(f.ID); err != nil {
+		fail(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	ok(w, map[string]any{"deleted": f.ID})
 }
 
 // ---- export / import ----
