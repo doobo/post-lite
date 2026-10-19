@@ -16,3 +16,4 @@ smoke-data/
 dev-cookies.txt
 smoke-cookies.txt
 .cdp-profile/
+dist/
