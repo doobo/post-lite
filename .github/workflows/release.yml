@@ -57,20 +57,27 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           STAMP="$(date -u +%Y%m%d)"
           NAME="postlite-${VERSION}-${GOOS}-${GOARCH}"
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
           cd dist
+          BINS=("postlite-${VERSION}-${GOOS}-${GOARCH}${EXT}" "pwreset-${VERSION}-${GOOS}-${GOARCH}${EXT}")
           if [ "$GOOS" = "windows" ]; then
-            zip "${NAME}-${STAMP}.zip" *-"${GOOS}"-"${GOARCH}"*
+            zip "${NAME}-${STAMP}.zip" "${BINS[@]}"
           else
-            chmod +x *-"${GOOS}"-"${GOARCH}"*
-            tar czf "${NAME}-${STAMP}.tar.gz" *-"${GOOS}"-"${GOARCH}"*
+            chmod +x "${BINS[@]}"
+            tar czf "${NAME}-${STAMP}.tar.gz" "${BINS[@]}"
           fi
-          rm -f *-"${GOOS}"-"${GOARCH}"*
+          rm -f "${BINS[@]}"
 
       - name: Compute checksums
         shell: bash
         run: |
           cd dist
-          sha256sum *.tar.gz *.zip > checksums.txt 2>/dev/null || sha256sum * > checksums.txt
+          shopt -s nullglob
+          files=( *.tar.gz *.zip )
+          if [ ${#files[@]} -gt 0 ]; then
+            sha256sum "${files[@]}" > checksums.txt
+          fi
           cat checksums.txt
 
       - uses: actions/upload-artifact@v4
