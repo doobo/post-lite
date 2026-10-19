@@ -50,6 +50,9 @@ jobs:
 
       - name: Package
         shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           STAMP="$(date -u +%Y%m%d)"
