@@ -48,6 +48,11 @@ jobs:
           go build -trimpath -ldflags="$LDFLAGS" -o "dist/postlite-${VERSION}-${GOOS}-${GOARCH}${EXT}" ./cmd/postlite
           go build -trimpath -ldflags="$LDFLAGS" -o "dist/pwreset-${VERSION}-${GOOS}-${GOARCH}${EXT}" ./cmd/pwreset
 
+      - name: Generate license bundle
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: make licenses
+
       - name: Package
         shell: bash
         env:
@@ -61,13 +66,15 @@ jobs:
           if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
           cd dist
           BINS=("postlite-${VERSION}-${GOOS}-${GOARCH}${EXT}" "pwreset-${VERSION}-${GOOS}-${GOARCH}${EXT}")
+          # License notices travel with the binaries (MIT + the bundled Apache-2.0 text).
+          NOTICES=(LICENSE THIRD_PARTY_LICENSES)
           if [ "$GOOS" = "windows" ]; then
-            zip "${NAME}-${STAMP}.zip" "${BINS[@]}"
+            zip "${NAME}-${STAMP}.zip" "${BINS[@]}" "${NOTICES[@]}"
           else
             chmod +x "${BINS[@]}"
-            tar czf "${NAME}-${STAMP}.tar.gz" "${BINS[@]}"
+            tar czf "${NAME}-${STAMP}.tar.gz" "${BINS[@]}" "${NOTICES[@]}"
           fi
-          rm -f "${BINS[@]}"
+          rm -f "${BINS[@]}" "${NOTICES[@]}"
 
       - name: Compute checksums
         shell: bash

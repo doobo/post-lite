@@ -294,3 +294,24 @@ WebSocket 代理、form-data / 文件上传、SSE 流式响应、请求前置后
 > `pm.request` / `pm.variables`，后置脚本还可用 `pm.response` / `pm.test` / `pm.expect`。尚未做的：
 > `pm.sendRequest`（脚本内再发请求）、`pm.response.json()` 之外的响应 API（cookies / visualizer）、
 > Socket.IO / MQTT、form-data 上传。设计见 [`docs/post-lite-script.md`](docs/post-lite-script.md)。
+
+## 许可证
+
+本项目以 [MIT](LICENSE) 发布。
+
+三方依赖均为宽松协议，与 MIT 兼容；再分发二进制或源码时需保留各自的版权声明与免责声明。
+版本以 `go.mod` 为准，下表按实际参与编译的模块列出。
+
+| 模块 | 协议 | 用途 |
+| --- | --- | --- |
+| `github.com/dop251/goja` | MIT | 前置/后置脚本的纯 Go JS 引擎 |
+| `golang.org/x/crypto` | BSD-3-Clause | scrypt 口令哈希 |
+| `modernc.org/sqlite` | BSD-3-Clause | 纯 Go SQLite 驱动；内嵌的 SQLite 本体为 Public Domain |
+| `github.com/google/pprof` | Apache-2.0 | goja 的 profiler 依赖（`goja/profiler.go` → `pprof/profile`），随二进制分发；该模块无 NOTICE 文件，附上其 LICENSE 即可满足 Apache-2.0 的声明义务 |
+| `github.com/dlclark/regexp2/v2`、`github.com/dustin/go-humanize`、`github.com/mattn/go-isatty`、`github.com/ncruces/go-strftime` | MIT | 间接依赖 |
+| `github.com/go-sourcemap/sourcemap`、`github.com/google/uuid`、`github.com/remyoudompheng/bigfft`、`golang.org/x/sys`、`golang.org/x/text` | BSD-3-Clause | 间接依赖 |
+| `modernc.org/libc`、`modernc.org/mathutil`、`modernc.org/memory` | BSD-3-Clause | 间接依赖（`modernc.org/sqlite` 使用） |
+
+发布包（GitHub Release 的 `.tar.gz` / `.zip`）除了两个二进制，还带 `LICENSE` 与 `THIRD_PARTY_LICENSES` 两份声明；后者由 `make licenses` 从 `go.mod` 与模块缓存汇编（可本地单独运行，产物落在 `dist/`）。
+
+前端（`internal/web/static`）为原生静态文件，无构建步骤，也不含第三方运行时依赖（`loginenc.js` 是本项目自己的代码）。
