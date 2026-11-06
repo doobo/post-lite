@@ -106,9 +106,6 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 		query = p.QueryPairs()
 	case b.AdHoc != nil:
 		method = b.AdHoc.Method
-		if method == "" {
-			method = "GET"
-		}
 		urlStr = b.AdHoc.URL
 		headers = b.AdHoc.Headers
 		bodyT = b.AdHoc.BodyType
@@ -128,6 +125,19 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "bad_request", "request_id or ad_hoc is required")
 		return
 	}
+
+	// Saved rows are normalized on write, but ad_hoc input still gets the same
+	// check so a typo (or an empty field) cannot turn into a confusing upstream
+	// error from net/http. Empty keeps the historical GET default.
+	if strings.TrimSpace(method) == "" {
+		method = "GET"
+	}
+	m, okm := normalizeMethod(method)
+	if !okm {
+		fail(w, http.StatusBadRequest, "bad_request", "method must be a valid HTTP method token (1-32 chars)")
+		return
+	}
+	method = m
 
 	// Build the resolver precedence: global env -> user env -> request vars.
 	gEnvID, uEnvID := s.activeEnvIDs(u)

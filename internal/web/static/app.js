@@ -344,8 +344,101 @@ async function loadCollections() {
 }
 
 // One hue per HTTP verb (see --method-*-color in app.css) so a request reads at
-// a glance in the tree and in the method picker.
-function methodClass(m) { return 'm-' + String(m || '').toUpperCase(); }
+// a glance in the tree and in the method field. Custom verbs get the neutral
+// "default" hue instead of falling back to unstyled text.
+const STANDARD_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
+
+function methodClass(m) {
+  const up = String(m || '').trim().toUpperCase();
+  return 'm-' + (STANDARD_METHODS.indexOf(up) >= 0 ? up : 'default');
+}
+
+// readMethod returns the typed verb in the conventional uppercase form. The
+// editor is a free-text field (custom verbs like PURGE / PROPFIND are allowed),
+// so the standard list is only a suggestion list.
+function readMethod() {
+  const el = $('#req-method');
+  return (el ? el.value : '').trim().toUpperCase();
+}
+
+// normalizeMethodField applies the same trim/uppercase rule to the visible
+// input when the user leaves it, so the stored and displayed values agree.
+function normalizeMethodField() {
+  const el = $('#req-method');
+  if (!el) return;
+  el.value = el.value.trim().toUpperCase();
+  updateMethodColor();
+}
+
+// selectMethodField selects the current verb when the field gains focus or is
+// clicked, so typing replaces GET with a new method without backspacing first.
+// It runs on both events because the mouseup that follows focus can otherwise
+// collapse the selection back to a caret.
+function selectMethodField() {
+  const el = $('#req-method');
+  if (el) el.select();
+}
+
+// clearMethod empties the field and keeps focus there, so switching from GET to
+// a custom verb takes one click on × plus typing. An empty method is rejected
+// by the server on save/send (and the field then shows the "GET" placeholder).
+function clearMethod() {
+  const el = $('#req-method');
+  if (!el) return;
+  el.value = '';
+  updateMethodColor();
+  el.focus();
+}
+
+// The suggestion menu is a normal page element rather than a native datalist
+// popup: the popup's scrollbar is drawn by the browser and ignores the app's
+// thin scrollbar styling. These helpers toggle/pick from that menu.
+function hideMethodPicker() {
+  const menu = $('#req-method-presets');
+  if (menu) menu.classList.add('hidden');
+}
+
+function showMethodPicker() {
+  const menu = $('#req-method-presets');
+  if (!menu) return;
+  if (!menu.classList.contains('hidden')) {
+    hideMethodPicker();
+    return;
+  }
+  const cur = readMethod();
+  menu.querySelectorAll('.method-option').forEach((b) => {
+    const on = b.dataset.method === cur;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  menu.classList.remove('hidden');
+  const el = $('#req-method');
+  if (el) el.focus();
+}
+
+function pickMethod(m) {
+  hideMethodPicker();
+  const el = $('#req-method');
+  if (!el) return;
+  el.value = m;
+  updateMethodColor();
+  el.focus();
+}
+
+// onMethodKey keeps the menu usable without the mouse: Escape closes it and
+// ArrowDown opens it (typing still works normally).
+function onMethodKey(ev) {
+  if (ev.key === 'Escape') {
+    hideMethodPicker();
+    return;
+  }
+  if (ev.key !== 'ArrowDown') return;
+  const menu = $('#req-method-presets');
+  if (menu && menu.classList.contains('hidden')) {
+    ev.preventDefault();
+    showMethodPicker();
+  }
+}
 
 // Collections and folders collapse independently and start collapsed: a large
 // tree otherwise fills the whole sidebar before the user has picked anything.
@@ -607,8 +700,8 @@ function setReqTab(name) { state.reqTab = name; setPanel('req', name); }
 function setResTab(name) { state.resTab = name; setPanel('res', name); }
 
 function updateMethodColor() {
-  const sel = $('#req-method');
-  if (sel) sel.className = methodClass(sel.value);
+  const el = $('#req-method');
+  if (el) el.className = methodClass(el.value);
 }
 
 // Tab badges show how many rows the panel actually carries, so a hidden panel
@@ -743,9 +836,26 @@ async function renderEditor() {
       + ' onclick="setProto(\'' + p + '\')">' + (p === 'http' ? 'HTTP' : p === 'ws' ? 'WebSocket' : 'SSE') + '</button>').join('')
     + '</div>'
     + '<div class="row sticky-actions">'
-    + '<select id="req-method" class="' + methodClass(c.method) + '" onchange="updateMethodColor()">'
-    + ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => '<option' + (c.method === m ? ' selected' : '') + '>' + m + '</option>').join('')
-    + '</select>'
+    + '<span class="method-field">'
+    + '<input id="req-method" class="' + methodClass(c.method) + '"'
+    + ' autocomplete="off" spellcheck="false" placeholder="GET"'
+    + ' title="HTTP method — pick a common verb or type a custom one"'
+    + ' value="' + escAttr(c.method) + '" oninput="updateMethodColor()"'
+    + ' onfocus="selectMethodField()" onclick="selectMethodField(); hideMethodPicker()"'
+    + ' onblur="normalizeMethodField()" onkeydown="onMethodKey(event)">'
+    + '<button type="button" class="method-clear" onclick="clearMethod()"'
+    + ' title="Clear method (then type a new one)" aria-label="Clear method">&times;</button>'
+    + '<button type="button" class="method-picker" onclick="showMethodPicker()"'
+    + ' title="Show common methods" aria-label="Show common methods">&#9662;</button>'
+    + '<div id="req-method-presets" class="method-menu hidden" role="listbox" aria-label="Common methods">'
+    + STANDARD_METHODS.map((m) => {
+      const on = String(c.method || '').toUpperCase() === m;
+      return '<button type="button" class="method-option' + (on ? ' active' : '') + '"'
+        + ' role="option" aria-selected="' + on + '" data-method="' + m + '"'
+        + ' onclick="pickMethod(\'' + m + '\')">' + m + '</button>';
+    }).join('')
+    + '</div>'
+    + '</span>'
     + '<input id="req-url" class="url" placeholder="http://host:5680/path — {{VAR}} / {{sec.NAME}} supported" value="' + escAttr(c.url) + '">'
     + '<button id="btn-save" class="ghost" onclick="saveRequest()" title="Save request (Ctrl+S)">Save</button>'
     + '<button id="btn-dup" class="ghost" onclick="duplicateRequest()" title="Save a copy as a new request">Duplicate</button>'
@@ -822,9 +932,9 @@ function onBodyTypeChange() {
   }
   // A GraphQL query travels in a POST body; leaving GET selected would send the
   // query as a query-string parameter, which no endpoint accepts.
-  const method = $('#req-method');
-  if (type === 'graphql' && method && method.value === 'GET') {
-    method.value = 'POST';
+  const methodEl = $('#req-method');
+  if (type === 'graphql' && methodEl && readMethod() === 'GET') {
+    methodEl.value = 'POST';
     updateMethodColor();
   }
 }
@@ -1047,7 +1157,7 @@ function buildAdHoc() {
   const headers = {};
   collectKV($('#req-headers')).forEach((p) => { headers[p.k] = p.v; });
   return {
-    method: $('#req-method').value,
+    method: readMethod(),
     url: $('#req-url').value,
     headers: headers,
     query: collectKV($('#req-query')),
@@ -1646,8 +1756,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const menu = $('#user-menu');
     if (menu && !menu.hidden && !ev.target.closest('.user-menu-wrap')) closeUserMenu();
   });
+  // The method suggestion menu closes on any click outside its field.
+  document.addEventListener('click', (ev) => {
+    if (!ev.target.closest('.method-field')) hideMethodPicker();
+  });
   document.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape') closeUserMenu();
+    if (ev.key === 'Escape') {
+      closeUserMenu();
+      hideMethodPicker();
+    }
   });
   // Keyboard first, buttons second: Enter in the URL field and Ctrl/Cmd+Enter
   // both send, Ctrl/Cmd+S saves without opening the browser's save dialog.

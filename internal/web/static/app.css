@@ -420,15 +420,67 @@ main { padding: 18px; overflow-x: clip; min-width: 0; }
 label { color: var(--muted); font-size: 12.5px; }
 .field { display: flex; flex-direction: column; gap: 4px; }
 
+/* The method field is free text: a clear × keeps switching to a custom verb
+   quick (GET -> × -> PURGE) instead of manually deleting the old value. */
+.method-field {
+  position: relative; display: inline-flex; flex: 0 0 auto;
+  align-items: center;
+}
 #req-method {
   font-family: var(--mono); font-weight: 700; font-size: 12.5px;
-  letter-spacing: .04em; min-width: 108px;
+  letter-spacing: .04em; min-width: 128px; width: 132px;
+  padding-right: 42px;
+  text-transform: uppercase;
 }
+/* the suggestion menu is a page element, so the global thin scrollbar applies
+   (the native datalist popup drew its own thick one) */
+.method-menu {
+  position: absolute; z-index: 30; top: calc(100% + 4px); left: 0;
+  min-width: 100%; width: max-content;
+  display: flex; flex-direction: column; gap: 1px;
+  max-height: 208px; overflow-y: auto;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 28px var(--shadow);
+}
+.method-option {
+  display: block; width: 100%; text-align: left;
+  padding: 4px 8px; border: 0; border-radius: 4px;
+  background: transparent; color: var(--text);
+  font: 600 12px/1.45 var(--mono); letter-spacing: .04em;
+}
+.method-option:hover { background: var(--panel2); color: var(--text); }
+.method-option:active { transform: none; }
+.method-option.active { color: var(--accent); }
+#req-method::placeholder { color: var(--muted); font-weight: 400; }
+.method-clear {
+  position: absolute; right: 22px; top: 50%; transform: translateY(-50%);
+  width: 17px; height: 17px; padding: 0; line-height: 15px;
+  font-size: 13px; border: 0; border-radius: 3px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  display: none;
+}
+.method-field #req-method:not(:placeholder-shown) + .method-clear { display: block; }
+.method-picker {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  width: 17px; height: 17px; padding: 0; border: 0; border-radius: 3px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  font-size: 9px; line-height: 1; display: flex; align-items: center; justify-content: center;
+}
+.method-clear:hover, .method-picker:hover { color: var(--text); background: var(--panel2); }
+/* The global button:active rule would replace translateY(-50%) and make these
+   absolutely centred buttons jump under the cursor mid-click. */
+.method-clear:active, .method-picker:active { transform: translateY(-50%); }
 #req-method.m-GET { color: var(--method-get-color); }
 #req-method.m-POST { color: var(--method-post-color); }
 #req-method.m-PUT { color: var(--method-put-color); }
 #req-method.m-PATCH { color: var(--method-patch-color); }
 #req-method.m-DELETE { color: var(--method-delete-color); }
+#req-method.m-HEAD { color: var(--method-head-color); }
+#req-method.m-OPTIONS { color: var(--method-options-color); }
+#req-method.m-default { color: var(--method-default-color); }
 
 .kvrow { display: flex; gap: 6px; margin: 5px 0; align-items: center; }
 .kvrow .k { width: 32%; font-family: var(--mono); font-size: 12.5px; }

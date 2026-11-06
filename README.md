@@ -74,7 +74,7 @@ change it after first login (Users -> reset-password).
 
 ## 功能概览
 
-- **Collections / Folders / Requests**：集合支持嵌套文件夹（`parent_id`），请求方法仅允许 `GET/POST/PUT/PATCH/DELETE`（服务端校验），支持 Headers、Query、Body（UI 提供 `none` / `json` / `raw` / `graphql`），http 请求还可带一段前置脚本（见下「前置脚本」）
+- **Collections / Folders / Requests**：集合支持嵌套文件夹（`parent_id`），请求方法支持任意合法 HTTP method token（常用 `GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS` 作为输入建议，服务端校验并统一大写），支持 Headers、Query、Body（UI 提供 `none` / `json` / `raw` / `graphql`），http 请求还可带一段前置脚本（见下「前置脚本」）
 - **GraphQL**：Body 类型选 `graphql` 后，上面写 query、下面写 variables（JSON 对象，可空）；发送时服务端拼成 `{"query":…,"variables":…}` 以 `application/json` POST，`{{VAR}}` / `{{sec.NAME}}` 在 query 与 variables 里都会解析；variables 不是合法 JSON 时直接 `400`，不会带着畸形 body 出去
 - **Environments**：`global`（admin 创建/管理）与 `user` 两种作用域；激活状态存在服务端 settings（`active_global_env`、`active_env_user_<uid>`），因此是按用户持久生效的
 - **Secret Vault**：只写不读，覆盖更新，命中才解密（进程内缓存 5 分钟，写入即失效）

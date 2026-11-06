@@ -977,3 +977,169 @@ func TestSaveRequestIntoFolder(t *testing.T) {
 		t.Errorf("folder after refused move = %v, want nil (unchanged)", got)
 	}
 }
+
+// TestUpdateRequestRenamesAndMovesCollection pins the edit-save path: a saved
+// request may be renamed and moved to another collection the user can see, and
+// both changes must be visible on the next read.
+func TestUpdateRequestRenamesAndMovesCollection(t *testing.T) {
+	ts := newTestServer(t)
+	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
+
+	from := ts.createCollection(admin, "from", false)
+	to := ts.createCollection(admin, "to", false)
+
+	reqID := mustRequest(t, ts, admin, map[string]any{
+		"collection_id": from, "name": "before", "method": "GET", "url": "http://example.test/",
+	})
+
+	if code, _, raw := ts.call("PUT", "/api/requests/"+idStr(reqID), admin, map[string]any{
+		"collection_id": to, "name": "after", "method": "GET", "url": "http://example.test/",
+	}); code != http.StatusOK {
+		t.Fatalf("update request = %d (%s)", code, raw)
+	}
+
+	code, resp, raw := ts.call("GET", "/api/requests/"+idStr(reqID), admin, nil)
+	if code != http.StatusOK {
+		t.Fatalf("get request = %d (%s)", code, raw)
+	}
+	var got struct {
+		CollectionID int64  `json:"collection_id"`
+		Name         string `json:"name"`
+	}
+	resp.decode(t, &got)
+	if got.Name != "after" {
+		t.Errorf("name after update = %q, want %q", got.Name, "after")
+	}
+	if got.CollectionID != to {
+		t.Errorf("collection after update = %d, want %d", got.CollectionID, to)
+	}
+}
+
+// TestMoveRequestToCollectionPermissions pins the target-collection check on a
+// move: a non-admin may move their request into a collection they can see (a
+// global one, for example) but never into someone else's private collection.
+func TestMoveRequestToCollectionPermissions(t *testing.T) {
+	ts := newTestServer(t)
+	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
+	bob := ts.cookie(ts.createUser("bob", "user", loginPassword))
+
+	bobCol := ts.createCollection(bob, "bob-private", false)
+	adminCol := ts.createCollection(admin, "admin-private", false)
+	globalCol := ts.createCollection(admin, "shared", true)
+
+	reqID := mustRequest(t, ts, bob, map[string]any{
+		"collection_id": bobCol, "name": "mine", "method": "GET", "url": "http://example.test/",
+	})
+
+	// Another user's private collection is off limits: the update is refused and
+	// the row stays where it was.
+	if code, _, raw := ts.call("PUT", "/api/requests/"+idStr(reqID), bob, map[string]any{
+		"collection_id": adminCol, "name": "mine", "method": "GET", "url": "http://example.test/",
+	}); code != http.StatusForbidden {
+		t.Errorf("move into a foreign private collection = %d, want 403 (%s)", code, raw)
+	}
+	if code, resp, raw := ts.call("GET", "/api/requests/"+idStr(reqID), bob, nil); code != http.StatusOK {
+		t.Fatalf("get request = %d (%s)", code, raw)
+	} else {
+		var got struct {
+			CollectionID int64 `json:"collection_id"`
+		}
+		resp.decode(t, &got)
+		if got.CollectionID != bobCol {
+			t.Errorf("collection after refused move = %d, want %d", got.CollectionID, bobCol)
+		}
+	}
+
+	// A visible (global) collection accepts the same move.
+	if code, _, raw := ts.call("PUT", "/api/requests/"+idStr(reqID), bob, map[string]any{
+		"collection_id": globalCol, "name": "mine", "method": "GET", "url": "http://example.test/",
+	}); code != http.StatusOK {
+		t.Errorf("move into a global collection = %d, want 200 (%s)", code, raw)
+	}
+}
+
+// TestCustomMethodsAreSavedAndValidated pins the free-text method field: verbs
+// outside the classic five are stored, input is normalized to the conventional
+// uppercase token, and garbage is refused instead of reaching the database.
+func TestCustomMethodsAreSavedAndValidated(t *testing.T) {
+	ts := newTestServer(t)
+	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
+	colID := ts.createCollection(admin, "methods", false)
+
+	reqID := mustRequest(t, ts, admin, map[string]any{
+		"collection_id": colID, "name": "webdav", "method": "PROPFIND", "url": "http://example.test/",
+	})
+	getMethod := func() string {
+		t.Helper()
+		code, resp, raw := ts.call("GET", "/api/requests/"+idStr(reqID), admin, nil)
+		if code != http.StatusOK {
+			t.Fatalf("get request = %d (%s)", code, raw)
+		}
+		var rq struct {
+			Method string `json:"method"`
+		}
+		resp.decode(t, &rq)
+		return rq.Method
+	}
+	if got := getMethod(); got != "PROPFIND" {
+		t.Errorf("stored method = %q, want PROPFIND", got)
+	}
+
+	// Lowercase and surrounding whitespace are normalized on the way in.
+	if code, _, raw := ts.call("PUT", "/api/requests/"+idStr(reqID), admin, map[string]any{
+		"collection_id": colID, "name": "webdav", "method": "  purge ", "url": "http://example.test/",
+	}); code != http.StatusOK {
+		t.Fatalf("update custom method = %d (%s)", code, raw)
+	}
+	if got := getMethod(); got != "PURGE" {
+		t.Errorf("stored method after update = %q, want PURGE", got)
+	}
+
+	for _, bad := range []string{"", "BAD METHOD", strings.Repeat("A", 33)} {
+		if code, _, raw := ts.call("POST", "/api/requests", admin, map[string]any{
+			"collection_id": colID, "name": "bad", "method": bad, "url": "http://example.test/",
+		}); code != http.StatusBadRequest {
+			t.Errorf("create with method %q = %d, want 400 (%s)", bad, code, raw)
+		}
+	}
+}
+
+// TestExecuteAcceptsCustomMethod pins the send path: a custom verb typed into
+// the editor reaches the upstream in uppercase, and a malformed one is refused
+// as a client error before any outbound request is attempted.
+func TestExecuteAcceptsCustomMethod(t *testing.T) {
+	ts := newTestServer(t)
+	admin := ts.cookie(ts.createUser("admin", "admin", loginPassword))
+
+	got := make(chan string, 1)
+	echo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Method
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer echo.Close()
+
+	if code, _, raw := ts.call("PUT", "/api/settings", admin,
+		map[string]string{"ssrf_whitelist": "127.0.0.0/8"}); code != http.StatusOK {
+		t.Fatalf("allow local whitelist = %d (%s)", code, raw)
+	}
+
+	if code, _, raw := ts.call("POST", "/api/execute", admin, map[string]any{
+		"ad_hoc": map[string]any{"method": "propfind", "url": echo.URL},
+	}); code != http.StatusOK {
+		t.Fatalf("execute custom method = %d (%s)", code, raw)
+	}
+	select {
+	case m := <-got:
+		if m != "PROPFIND" {
+			t.Errorf("upstream method = %q, want PROPFIND", m)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the upstream server was not reached")
+	}
+
+	if code, _, raw := ts.call("POST", "/api/execute", admin, map[string]any{
+		"ad_hoc": map[string]any{"method": "BAD METHOD", "url": echo.URL},
+	}); code != http.StatusBadRequest {
+		t.Errorf("execute invalid method = %d, want 400 (%s)", code, raw)
+	}
+}

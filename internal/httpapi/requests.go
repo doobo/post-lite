@@ -4,13 +4,39 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"postlite/internal/models"
 	"postlite/internal/repository"
 )
 
-var validMethods = map[string]struct{}{
-	"GET": {}, "POST": {}, "PUT": {}, "PATCH": {}, "DELETE": {},
+// maxMethodLen bounds a stored method token. 32 is far beyond any registered
+// verb and keeps a typo from turning into an arbitrary string in the database.
+const maxMethodLen = 32
+
+// normalizeMethod trims and upper-cases an HTTP method, then rejects anything
+// that is not an RFC 9110 token. The editor offers the common verbs as
+// suggestions but custom ones (PURGE, PROPFIND, ...) are allowed, which is why
+// there is no fixed allow-list here.
+func normalizeMethod(m string) (string, bool) {
+	m = strings.ToUpper(strings.TrimSpace(m))
+	if m == "" || len(m) > maxMethodLen {
+		return "", false
+	}
+	for i := 0; i < len(m); i++ {
+		if !isMethodTokenChar(m[i]) {
+			return "", false
+		}
+	}
+	return m, true
+}
+
+// isMethodTokenChar reports whether c may appear in an HTTP method token.
+func isMethodTokenChar(c byte) bool {
+	if c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
+		return true
+	}
+	return strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0
 }
 
 // validBodyTypes is what the executor knows how to send: `none` (no body),
@@ -123,12 +149,13 @@ func (s *Server) createRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Protocol = proto
-	if _, okm := validMethods[p.Method]; !okm {
-		fail(w, http.StatusBadRequest, "bad_request", "method must be one of GET/POST/PUT/PATCH/DELETE")
+	method, okm := normalizeMethod(p.Method)
+	if !okm {
+		fail(w, http.StatusBadRequest, "bad_request", "method must be a valid HTTP method token (1-32 chars)")
 		return
 	}
-	// Realtime rows reuse method=GET so the V1 method CHECK keeps holding;
-	// the wire scheme (ws/wss/http) lives in url.
+	p.Method = method
+	// Realtime rows reuse method=GET; the wire scheme (ws/wss/http) lives in url.
 	if (proto == "ws" || proto == "sse") && p.Method != "GET" {
 		fail(w, http.StatusBadRequest, "bad_request", "ws/sse requests must use method GET")
 		return
@@ -228,10 +255,12 @@ func (s *Server) updateRequest(w http.ResponseWriter, r *http.Request) {
 	if p.Name == "" {
 		p.Name = rq.Name
 	}
-	if _, okm := validMethods[p.Method]; !okm {
-		fail(w, http.StatusBadRequest, "bad_request", "method must be one of GET/POST/PUT/PATCH/DELETE")
+	method, okm := normalizeMethod(p.Method)
+	if !okm {
+		fail(w, http.StatusBadRequest, "bad_request", "method must be a valid HTTP method token (1-32 chars)")
 		return
 	}
+	p.Method = method
 	proto, okp := checkProtocol(w, p.Protocol)
 	if !okp {
 		return
@@ -247,13 +276,32 @@ func (s *Server) updateRequest(w http.ResponseWriter, r *http.Request) {
 	if !checkScripts(w, p, proto) {
 		return
 	}
-	p.CollectionID = rq.CollectionID
+	// The editor may move the request into another collection; accept the
+	// client's value but verify a different target is one the user can see.
+	// A zero value (older clients, or a body without collection_id) keeps the
+	// current collection instead of writing an invalid foreign key.
+	targetCollectionID := rq.CollectionID
+	if p.CollectionID != 0 {
+		targetCollectionID = p.CollectionID
+	}
+	if targetCollectionID != rq.CollectionID {
+		target, err := s.Store.Collections.Get(targetCollectionID)
+		if err != nil {
+			fail(w, http.StatusNotFound, "not_found", "collection not found")
+			return
+		}
+		if !s.Store.Collections.CanView(u, target) {
+			fail(w, http.StatusForbidden, "forbidden", "cannot access this collection")
+			return
+		}
+	}
+	p.CollectionID = targetCollectionID
 	// The editor may move the request into a folder (or back to the root, a nil
 	// folder_id); accept the client's value but verify a non-nil target belongs
 	// to this collection. Overwriting it with the old value here would silently
 	// discard every folder move.
 	if p.FolderID != nil {
-		folders, err := s.Store.Folders.List(rq.CollectionID)
+		folders, err := s.Store.Folders.List(p.CollectionID)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "internal", err.Error())
 			return

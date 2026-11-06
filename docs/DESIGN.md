@@ -239,7 +239,7 @@ CREATE TABLE settings (
   （默认 `10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8`）。
   执行前解析目标 host，要求**所有** A/AAAA 结果都落在白名单内才放行；跟随重定向时每一跳重新校验。
   拦截返回 `451` 并写审计日志。
-- 通用约定：请求体上限 4MB；`method` 只允许 `GET/POST/PUT/PATCH/DELETE`，服务端校验。
+- 通用约定：请求体上限 4MB；`method` 接受任意合法 HTTP method token（1–32 字符，服务端校验并统一大写，常用动词在 UI 中作为输入建议）。
 
 ### GraphQL
 
@@ -459,7 +459,7 @@ make test       # go test ./...
 
 单 Go 二进制 + 内嵌 UI；SQLite(WAL) + 自动迁移；登录 / 会话 / admin 用户管理；
 RBAC 数据隔离；Collection / Folder / Request CRUD；Environment（global + user，激活持久化）；
-Secret 加密入库、只写不读；执行 GET/POST/PUT/PATCH/DELETE + Headers/Query/Body；
+Secret 加密入库、只写不读；执行任意 HTTP method（常用 GET/POST/PUT/PATCH/DELETE）+ Headers/Query/Body；
 `{{VAR}}` + `{{sec.NAME}}` 注入与全链路脱敏；SSRF 白名单；History 脱敏快照；集合导入 / 导出。
 
 **V0.2（进行中）**

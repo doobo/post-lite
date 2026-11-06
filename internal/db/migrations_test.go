@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,6 +129,56 @@ func TestOpenReopensExistingDatabase(t *testing.T) {
 	}
 }
 
+// TestMigrationV7KeepsRowsAndEnablesCustomMethods builds a V6 database by hand,
+// seeds a request, then runs the V7 table rebuild: existing rows survive and a
+// verb outside the old allow-list can be stored, while foreign keys still work.
+func TestMigrationV7KeepsRowsAndEnablesCustomMethods(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "postlite.db")
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", name)
+	d, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	defer d.Close()
+	d.SetMaxOpenConns(1)
+
+	for i := 0; i < 6; i++ {
+		if _, err := d.Exec(migrations[i]); err != nil {
+			t.Fatalf("apply legacy migration %d: %v", i+1, err)
+		}
+	}
+	mustExec(t, d, "PRAGMA user_version = 6")
+	mustExec(t, d, `INSERT INTO collections (id, name, created_at) VALUES (1, 'c', '2026-01-01T00:00:00Z')`)
+	mustExec(t, d, `INSERT INTO requests (id, collection_id, name, method, url, body_type, updated_at)
+		VALUES (1, 1, 'kept', 'GET', 'http://x', 'none', '2026-01-01T00:00:00Z')`)
+
+	if err := Migrate(d); err != nil {
+		t.Fatalf("Migrate V7: %v", err)
+	}
+	if v := userVersion(t, d); v != len(migrations) {
+		t.Errorf("user_version = %d after V7, want %d", v, len(migrations))
+	}
+	if n := count(t, d, "SELECT COUNT(*) FROM requests WHERE id = 1 AND name = 'kept' AND method = 'GET'"); n != 1 {
+		t.Error("the seeded request did not survive the table rebuild")
+	}
+
+	if _, err := d.Exec(`INSERT INTO requests (collection_id, name, method, url, body_type, updated_at)
+		VALUES (1, 'custom', 'PROPFIND', 'http://x', 'none', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Errorf("V7 rejected a custom method: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO requests (collection_id, name, method, url, body_type, updated_at)
+		VALUES (1, 'bad', '', 'http://x', 'none', '2026-01-01T00:00:00Z')`); err == nil {
+		t.Error("V7 accepted an empty method")
+	}
+
+	// The rebuilt table must keep ON DELETE CASCADE.
+	mustExec(t, d, "DELETE FROM collections WHERE id = 1")
+	if n := count(t, d, "SELECT COUNT(*) FROM requests"); n != 0 {
+		t.Errorf("requests = %d after deleting their collection, want 0", n)
+	}
+}
+
 func TestFailedMigrationRollsBackAndKeepsVersion(t *testing.T) {
 	d := openTestDB(t)
 	applied := len(migrations)
@@ -248,9 +299,9 @@ func TestConstraintsRejectInvalidRows(t *testing.T) {
 		{"username must be unique",
 			`INSERT INTO users (username, password_hash, salt, enabled, role, created_at)
 			 VALUES ('dup', 'h', 's', 1, 'user', '` + ts + `')`},
-		{"method must be a known verb",
+		{"method must be 1-32 chars",
 			`INSERT INTO requests (collection_id, name, method, url, body_type, updated_at)
-			 VALUES (1, 'r', 'TRACE', 'http://x', 'none', '` + ts + `')`},
+			 VALUES (1, 'r', '', 'http://x', 'none', '` + ts + `')`},
 		{"environment scope must be global or user",
 			`INSERT INTO environments (name, scope, vars) VALUES ('e', 'team', '{}')`},
 		{"secret name must be unique",
@@ -279,5 +330,9 @@ func TestConstraintsRejectInvalidRows(t *testing.T) {
 	if _, err := d.Exec(`INSERT INTO requests (collection_id, name, method, url, body_type, updated_at)
 		VALUES (1, 'r', 'PATCH', 'http://x', 'none', ?)`, ts); err != nil {
 		t.Errorf("valid PATCH request rejected: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO requests (collection_id, name, method, url, body_type, updated_at)
+		VALUES (1, 'r', 'PROPFIND', 'http://x', 'none', ?)`, ts); err != nil {
+		t.Errorf("custom method rejected: %v", err)
 	}
 }

@@ -392,6 +392,49 @@ func TestTreeVerbIsCompact(t *testing.T) {
 	}
 }
 
+// TestMethodFieldAcceptsCustomVerbs pins the editor method control: a free-text
+// input with common verbs as suggestions, not a fixed <select> that would hide
+// custom methods (PURGE, PROPFIND, ...).
+func TestMethodFieldAcceptsCustomVerbs(t *testing.T) {
+	f := assets(t)
+	js := readAsset(t, f, "app.js")
+	css := readAsset(t, f, "app.css")
+
+	if strings.Contains(js, `<select id="req-method"`) {
+		t.Error("#req-method must not be a fixed select list; custom methods must be typeable")
+	}
+	if !strings.Contains(js, `id="req-method" class="`) || !strings.Contains(js, `id="req-method-presets"`) || !strings.Contains(js, `class="method-option`) {
+		t.Error("the method editor must be an input with a custom suggestion menu")
+	}
+	if strings.Contains(js, `list="req-method-presets"`) {
+		t.Error("the method field must not use a native datalist: its popup scrollbar cannot be styled")
+	}
+	if !strings.Contains(js, "function readMethod(") || !strings.Contains(js, "normalizeMethodField(") {
+		t.Error("method values must be trimmed/uppercased before send and save")
+	}
+	if !strings.Contains(js, `class="method-clear"`) || !strings.Contains(js, "function clearMethod(") {
+		t.Error("the method field must offer a clear button so a new verb can be typed right away")
+	}
+	if !strings.Contains(js, `class="method-picker"`) || !strings.Contains(js, "function showMethodPicker(") {
+		t.Error("the method field must draw its own picker button next to the clear button")
+	}
+	if !strings.Contains(js, "function selectMethodField(") {
+		t.Error("focusing the method field should select the current verb for quick replacement")
+	}
+	if !strings.Contains(css, ".method-clear") || !strings.Contains(css, ".method-picker") {
+		t.Error("app.css must style the method clear and picker buttons")
+	}
+	if !strings.Contains(css, ".method-menu") || !strings.Contains(css, ".method-option") {
+		t.Error("app.css must style the custom method suggestion menu")
+	}
+	if !strings.Contains(css, ".method-clear:active") {
+		t.Error("the centred method buttons must keep translateY(-50%) while active")
+	}
+	if !strings.Contains(css, "#req-method.m-default") {
+		t.Error("app.css must give custom methods the default hue")
+	}
+}
+
 // TestViewRoutesAreWired pins the URL half of the left nav. Each section is a
 // real path, so a reload on /environments must restore that section instead of
 // always falling back to /editor. The popstate listener is what makes the

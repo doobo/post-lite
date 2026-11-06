@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-var migrations = []string{migrationV1, migrationV2, migrationV3, migrationV4, migrationV5, migrationV6}
+var migrations = []string{migrationV1, migrationV2, migrationV3, migrationV4, migrationV5, migrationV6, migrationV7}
 
 const migrationV1 = `
 CREATE TABLE users (
@@ -106,9 +106,9 @@ ALTER TABLE requests ADD COLUMN variables TEXT;
 `
 
 // migrationV4 adds the realtime protocol discriminator. HTTP stays the
-// default; ws/sse rows reuse method=GET (so the V1 method CHECK keeps
-// holding) and carry their extra options in the same columns the editor
-// already has (body = initial message / SSE event filter lives in variables).
+// default; ws/sse rows reuse method=GET (the wire has no verb of its own) and
+// carry their extra options in the same columns the editor already has
+// (body = initial message / SSE event filter lives in variables).
 // Socket.IO / MQTT will extend this column later, no new table needed.
 const migrationV4 = `
 ALTER TABLE requests ADD COLUMN protocol TEXT NOT NULL DEFAULT 'http';
@@ -125,6 +125,43 @@ ALTER TABLE requests ADD COLUMN script TEXT;
 // Same shape as V5: NULL means "no script" and it is never run implicitly.
 const migrationV6 = `
 ALTER TABLE requests ADD COLUMN test_script TEXT;
+`
+
+// migrationV7 drops the V1 method allow-list so the editor can save custom
+// verbs (PURGE, PROPFIND, ...). SQLite cannot alter a CHECK in place, so the
+// table is rebuilt with the same columns and foreign keys; only the method
+// constraint changes, to a length bound the API backs with a full token check.
+const migrationV7 = `
+CREATE TABLE requests_v7 (
+  id            INTEGER PRIMARY KEY,
+  collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+  folder_id     INTEGER REFERENCES folders(id) ON DELETE SET NULL,
+  owner_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  name          TEXT NOT NULL,
+  method        TEXT NOT NULL CHECK(length(method) BETWEEN 1 AND 32),
+  url           TEXT NOT NULL,
+  headers       TEXT,
+  query         TEXT,
+  body_type     TEXT NOT NULL DEFAULT 'none',
+  body          TEXT,
+  updated_at    TEXT NOT NULL,
+  use_proxy     INTEGER NOT NULL DEFAULT 0,
+  variables     TEXT,
+  protocol      TEXT NOT NULL DEFAULT 'http',
+  script        TEXT,
+  test_script   TEXT
+);
+
+INSERT INTO requests_v7
+  (id, collection_id, folder_id, owner_id, name, method, url, headers, query,
+   body_type, body, updated_at, use_proxy, variables, protocol, script, test_script)
+SELECT
+   id, collection_id, folder_id, owner_id, name, method, url, headers, query,
+   body_type, body, updated_at, use_proxy, variables, protocol, script, test_script
+FROM requests;
+
+DROP TABLE requests;
+ALTER TABLE requests_v7 RENAME TO requests;
 `
 
 func Migrate(db *sql.DB) error {
