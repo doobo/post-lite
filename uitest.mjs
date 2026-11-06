@@ -174,6 +174,22 @@ async function main() {
 
   await step('SIGN IN: the app view replaces the login view', async () => signIn('admin', ADMIN_PW), false);
 
+  // The walkthrough sends probe requests back to this same instance. The shipped
+  // default blocks loopback (empty SSRF whitelist), so allow it explicitly;
+  // the SETTINGS step later verifies the form loads this persisted value.
+  await step('LOCAL TEST PREP: allow loopback targets for the walkthrough', async () => {
+    await evaluate(`(async () => {
+      const s = await api('/settings');
+      await api('/settings', { method: 'PUT', body: {
+        ssrf_whitelist: '127.0.0.0/8,::1/128',
+        exec_timeout: s.exec_timeout || '60s',
+        max_history: s.max_history || '1000',
+        proxy_url: s.proxy_url || '',
+      }});
+    })(); true`);
+    return 'ssrf_whitelist=127.0.0.0/8,::1/128';
+  });
+
   await step('fresh install: the default view says what to do first', async () => {
     await waitFor('a view rendered', `document.querySelector('#content').textContent.trim().length > 0`);
     const text = await evaluate(`document.querySelector('#content').textContent`);
@@ -212,6 +228,42 @@ async function main() {
     return 'three palettes, remembered across a reload';
   });
 
+  await step('ROUTING: the open section survives a reload and Back/Forward', async () => {
+    await evaluate(clickNav('environments'));
+    await waitFor('environments view', `!!document.querySelector('#new-env-name')`);
+    expect('URL follows the menu', (await evaluate('location.pathname')) === '/environments',
+      await evaluate('location.pathname'));
+
+    await client.send('Page.reload');
+    // Wait for the session and the view: the shell is in the DOM before
+    // /auth/me and the startup render finish.
+    await waitFor('app restored on the same section', `(() => {
+      const app = document.querySelector('#app-view');
+      return !!app && app.hidden === false && !!document.querySelector('#new-env-name');
+    })()`, 15000);
+    expect('reload kept /environments', (await evaluate('location.pathname')) === '/environments',
+      await evaluate('location.pathname'));
+    const active = await evaluate(`document.querySelector('nav button[data-view="environments"]').classList.contains('active')`);
+    expect('environments menu stays active', active === true);
+
+    await evaluate('history.back(); true');
+    await waitFor('Back returns to the editor route',
+      `location.pathname === '/editor' && document.querySelector('nav button[data-view="editor"]').classList.contains('active')`, 8000);
+    await evaluate('history.forward(); true');
+    await waitFor('Forward returns to the environments route',
+      `location.pathname === '/environments' && !!document.querySelector('#new-env-name')`, 8000);
+    return 'route survives reload; Back/Forward re-render';
+  });
+
+  await step('BRAND: clicking the header logo reloads into Collections', async () => {
+    await evaluate(`document.querySelector('header .brand').click(); true`);
+    await waitFor('brand navigated to collections',
+      `location.pathname === '/collections' && !!document.querySelector('#new-coll-name')`, 15000);
+    const active = await evaluate(`document.querySelector('nav button[data-view="collections"]').classList.contains('active')`);
+    expect('collections menu active after brand click', active === true);
+    return 'reloaded /collections';
+  });
+
   await step('SECRETS: store a secret, the UI must never show the value', async () => {
     await evaluate(clickNav('secrets'));
     await waitFor('secrets view', `!!document.querySelector('#new-sec-name')`);
@@ -232,12 +284,38 @@ async function main() {
       ${btnByText('#content', 'Create')}.click(); true`);
     await waitFor('collection in tree', `document.querySelector('#tree').textContent.includes('UI Smoke')`);
 
+    // A long tree must not fill the sidebar on first paint: collections start
+    // collapsed, and the caret expands them again.
+    const initialTree = await evaluate(`(() => {
+      const coll = [...document.querySelectorAll('#tree .node.coll')].find(n => n.textContent.includes('UI Smoke'));
+      const sub = coll && document.querySelector('[data-sub="' + coll.dataset.node + '"]');
+      return JSON.stringify({ collapsed: !!coll && coll.classList.contains('collapsed'), hidden: !!sub && sub.classList.contains('hidden') });
+    })()`);
+    const before = JSON.parse(initialTree);
+    expect('new collection starts collapsed', before.collapsed === true && before.hidden === true, initialTree);
+    await evaluate(`[...document.querySelectorAll('#tree .node.coll')]
+      .find(n => n.textContent.includes('UI Smoke')).click(); true`);
+    await waitFor('collection expands', `(() => {
+      const coll = [...document.querySelectorAll('#tree .node.coll')].find(n => n.textContent.includes('UI Smoke'));
+      const sub = coll && document.querySelector('[data-sub="' + coll.dataset.node + '"]');
+      return !!coll && !coll.classList.contains('collapsed') && !!sub && !sub.classList.contains('hidden');
+    })()`);
+
     await evaluate(`${btnByText('#content', '+ Folder')}.click(); true`);
     await waitFor('folder dialog', dialogOpen);
     await evaluate(typeDialog('folder-1'));
     await evaluate(clickDialogOk);
     await waitFor('dialog closed', dialogClosed);
     await waitFor('folder in tree', `document.querySelector('#tree').textContent.includes('folder-1')`);
+
+    // Folders follow the same default, so a deep collection stays readable.
+    const folderState = await evaluate(`(() => {
+      const fold = [...document.querySelectorAll('#tree .node.fold')].find(n => n.textContent.includes('folder-1'));
+      return JSON.stringify({ collapsed: !!fold && fold.classList.contains('collapsed') });
+    })()`);
+    expect('new folder starts collapsed', JSON.parse(folderState).collapsed === true, folderState);
+    await evaluate(`[...document.querySelectorAll('#tree .node.fold')]
+      .find(n => n.textContent.includes('folder-1')).click(); true`);
 
     await evaluate(`${btnByText('#content', '+ Request')}.click(); true`);
     await waitFor('editor opened', `!!document.querySelector('#req-url')`);
@@ -257,6 +335,40 @@ async function main() {
     await evaluate(`(() => { const r = document.querySelector('#req-headers .kvrow');
       r.querySelector('.k').value = 'X-Demo';
       r.querySelector('.v').value = 'Bearer {{sec.demo_key}}'; })(); true`);
+
+    // A second, unchecked header must never reach the wire.
+    await evaluate(`${btnByText('#req-headers', '+ row')}.click(); true`);
+    await waitFor('second header row', `document.querySelectorAll('#req-headers .kvrow').length === 2`);
+    const headerChecks = await evaluate(`JSON.stringify([...document.querySelectorAll('#req-headers .kvrow')]
+      .map(r => r.querySelector('.pick').checked))`);
+    expect('new header rows default selected', headerChecks === '[true,true]', headerChecks);
+    await evaluate(`(() => { const r = document.querySelectorAll('#req-headers .kvrow')[1];
+      r.querySelector('.k').value = 'X-Drop';
+      r.querySelector('.v').value = '1';
+      r.querySelector('.pick').click(); })(); true`);
+    await waitFor('header row disabled', `document.querySelectorAll('#req-headers .kvrow')[1].classList.contains('off')`);
+    expect('header tab count ignores unchecked rows',
+      (await evaluate(`document.querySelector('[data-count="headers"]').textContent`)) === '1');
+
+    // Params: one enabled, one unchecked, both starting selected.
+    await evaluate(`${btnByText('#req-query', '+ row')}.click(); true`);
+    await waitFor('param row', `document.querySelectorAll('#req-query .kvrow').length === 1`);
+    await evaluate(`(() => { const r = document.querySelector('#req-query .kvrow');
+      r.querySelector('.k').value = 'keep';
+      r.querySelector('.v').value = '1'; })(); true`);
+    await evaluate(`${btnByText('#req-query', '+ row')}.click(); true`);
+    await waitFor('second param row', `document.querySelectorAll('#req-query .kvrow').length === 2`);
+    const paramChecks = await evaluate(`JSON.stringify([...document.querySelectorAll('#req-query .kvrow')]
+      .map(r => r.querySelector('.pick').checked))`);
+    expect('new param rows default selected', paramChecks === '[true,true]', paramChecks);
+    await evaluate(`(() => { const r = document.querySelectorAll('#req-query .kvrow')[1];
+      r.querySelector('.k').value = 'drop';
+      r.querySelector('.v').value = '1';
+      r.querySelector('.pick').click(); })(); true`);
+    await waitFor('param row disabled', `document.querySelectorAll('#req-query .kvrow')[1].classList.contains('off')`);
+    expect('params tab count ignores unchecked rows',
+      (await evaluate(`document.querySelector('[data-count="params"]').textContent`)) === '1');
+
     await evaluate(`${btnByText('#req-vars', '+ row')}.click(); true`);
     await waitFor('temp var row', `document.querySelectorAll('#req-vars .kvrow').length === 1`);
     await evaluate(`(() => { const r = document.querySelector('#req-vars .kvrow');
@@ -273,6 +385,8 @@ async function main() {
     expect('status 200 rendered', /Response\s*200/.test(result), result.slice(0, 140));
     // the query carried {{sec.demo_key}}; the seed value must be gone from the URL
     expect('final url masked', /probe=\*\*\*/.test(result), result.slice(0, 200));
+    expect('selected param sent', /keep=1/.test(result), result.slice(0, 240));
+    expect('unchecked param skipped', !/drop=1/.test(result), result.slice(0, 240));
     expect('secret never shown', !result.includes(SECRET_VALUE));
     expect('response headers rendered', result.includes('Content-Type'));
     return saved.trim();
@@ -347,9 +461,16 @@ async function main() {
       const row = [...document.querySelectorAll('#content tr')].find(tr => tr.textContent.includes('***'));
       [...row.querySelectorAll('button')].find(b => b.textContent.trim() === 'View').click();
     })(); true`);
-    await waitFor('history detail', `document.querySelector('#hist-detail').textContent.trim().length > 0`);
-    const detail = await evaluate(`document.querySelector('#hist-detail').textContent`);
+    await waitFor('history detail', `(() => {
+      const m = document.querySelector('#hist-modal');
+      return !!m && m.hidden === false
+        && document.querySelector('#hist-modal-req').textContent.trim().length > 0;
+    })()`);
+    const detail = await evaluate(`document.querySelector('#hist-modal').textContent`);
     expect('detail redacted', !detail.includes(SECRET_VALUE) && detail.includes('***'));
+    expect('unchecked header not in history', !/X-Drop/.test(detail), detail.slice(0, 300));
+    expect('unchecked param not in history', !/drop=1/.test(detail), detail.slice(0, 300));
+    await evaluate(`document.querySelector('#hist-modal .ghost').click(); true`);
     return 'detail rendered';
   });
 

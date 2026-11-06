@@ -8,7 +8,7 @@
  *
  * Deliberately not a general-purpose crypto library:
  *   - only the encrypt side exists, and only for one 2048-bit key per login;
- *   - the modulus/exponent come from GET /api/auth/login-key, so no DER parsing;
+ *   - the modulus/exponent come from POST /api/auth/login-key, so no DER parsing;
  *   - a wrong result is not a security hole for the callers of this file: an
  *     encrypted payload that does not decrypt is rejected by the server, and the
  *     password never leaves the page in clear text either way.

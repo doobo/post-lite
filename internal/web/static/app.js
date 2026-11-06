@@ -6,7 +6,7 @@ const state = {
   view: 'editor',
   collections: [],
   treeData: {},       // collId -> {collection, folders, requests}
-  treeCollapsed: {},  // nodeKey -> true (collections/folders start expanded)
+  treeExpanded: {},   // nodeKey -> true (collections/folders start collapsed)
   current: null,      // request being edited
   envs: [],
   results: null,
@@ -201,7 +201,7 @@ const bytesToB64 = (bytes) => { let s = ''; bytes.forEach((b) => { s += String.f
 // A captured request body is therefore useless to proxies, access logs and
 // anyone replaying it (the challenge is burned on use).
 async function encryptPassword(password) {
-  const lk = await api('/auth/login-key');
+  const lk = await api('/auth/login-key', { method: 'POST' });
   const payload = JSON.stringify({ c: lk.challenge, p: password });
 
   // crypto.subtle exists only in a secure context (HTTPS or localhost). A
@@ -225,6 +225,34 @@ async function encryptPassword(password) {
   return LoginEnc.encrypt(payload, lk.n, lk.e);
 }
 
+/* ---------- view routes ---------- */
+
+// The left nav is also the URL: every section is a real path (/collections,
+// /history, ...) instead of only in-memory state. A refresh, a bookmark and the
+// browser Back/Forward buttons therefore keep the section that was open, and the
+// server's SPA fallback serves index.html for each of those paths.
+const VIEW_ROUTES = ['collections', 'editor', 'environments', 'history', 'secrets', 'users', 'settings'];
+const DEFAULT_VIEW = 'editor';
+const ADMIN_VIEWS = ['secrets', 'users', 'settings'];
+
+function routeView() {
+  const part = (location.pathname || '/').split('/')[1] || '';
+  let name = part;
+  try { name = decodeURIComponent(part); } catch (e) { /* keep the raw segment */ }
+  return VIEW_ROUTES.indexOf(name) >= 0 ? name : DEFAULT_VIEW;
+}
+
+// writeRoute mirrors a view into the address bar. replace is used for startup
+// and for redirects (e.g. a non-admin asking for /users), so those never leave
+// a dead entry in the Back stack.
+function writeRoute(name, replace) {
+  const target = '/' + name + location.search + location.hash;
+  const current = location.pathname + location.search + location.hash;
+  if (current === target) return;
+  const method = replace ? 'replaceState' : 'pushState';
+  history[method]({ view: name }, '', target);
+}
+
 /* ---------- login / shell ---------- */
 
 function showLogin() {
@@ -243,13 +271,24 @@ async function startApp() {
     + ' <span class="badge' + (state.user.role === 'admin' ? ' admin' : '') + '">' + esc(state.user.role) + '</span>';
   $$('.admin-only').forEach((b) => { b.style.display = state.user.role === 'admin' ? '' : 'none'; });
   await reloadAll();
-  setView('editor');
+  setView(routeView(), { replace: true });
 }
 
-function setView(name) {
+function setView(name, opts) {
   // Nothing to render before sign-in: a stale async caller (an expired session
   // resolving late) must not crash on a missing state.user.
   if (!state.user) return;
+  opts = opts || {};
+  if (VIEW_ROUTES.indexOf(name) < 0) name = DEFAULT_VIEW;
+  // Admin pages are not just hidden in the menu: a bookmarked or hand-typed URL
+  // must land on a view the role can actually use, without keeping the refused
+  // path in history.
+  let replace = !!opts.replace;
+  if (ADMIN_VIEWS.indexOf(name) >= 0 && state.user.role !== 'admin') {
+    name = DEFAULT_VIEW;
+    replace = true;
+  }
+  writeRoute(name, replace);
   state.view = name;
   $$('#main-nav button').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
   $$('#user-menu button[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
@@ -265,9 +304,6 @@ function setView(name) {
     settings: renderSettings,
   };
   const fn = renderers[name] || renderEditor;
-  if ((name === 'secrets' || name === 'users' || name === 'settings') && state.user.role !== 'admin') {
-    return setView('editor');
-  }
   fn().catch((e) => { $('#content').innerHTML = '<div class="card"><p class="err">' + esc(e.message) + '</p></div>'; });
 }
 
@@ -311,15 +347,21 @@ async function loadCollections() {
 // a glance in the tree and in the method picker.
 function methodClass(m) { return 'm-' + String(m || '').toUpperCase(); }
 
-// Collections and folders collapse independently. Nodes start expanded, so the
-// whole tree is reachable without extra clicks; collapsed children stay in the
-// DOM (just display:none) which keeps find-in-page and the UI tests working.
+// Collections and folders collapse independently and start collapsed: a large
+// tree otherwise fills the whole sidebar before the user has picked anything.
+// Collapsed children stay in the DOM (just display:none), which keeps
+// find-in-page and the UI tests working.
 function toggleTree(ev, key) {
   if (ev) ev.stopPropagation();
   const node = document.querySelector('[data-node="' + key + '"]');
   const sub = document.querySelector('[data-sub="' + key + '"]');
   if (!node || !sub) return;
-  sub.classList.toggle('hidden', node.classList.toggle('collapsed'));
+  const collapsed = node.classList.toggle('collapsed');
+  sub.classList.toggle('hidden', collapsed);
+  // Remember the choice for the next renderTree(): opening a request or
+  // reloading collections must not snap the node back to its default.
+  if (collapsed) delete state.treeExpanded[key];
+  else state.treeExpanded[key] = true;
 }
 
 function renderTree() {
@@ -342,9 +384,9 @@ function renderTree() {
   let html = '<h3>Collections</h3>';
   for (const c of state.collections) {
     const d = state.treeData[c.id];
-    const collapsed = !!state.treeCollapsed['coll-' + c.id];
+    const expanded = !!state.treeExpanded['coll-' + c.id];
     const tag = c.owner_id == null ? ' <span class="badge">global</span>' : '';
-    html += '<div class="node coll' + (collapsed ? ' collapsed' : '') + '" data-node="coll-' + c.id + '"'
+    html += '<div class="node coll' + (expanded ? '' : ' collapsed') + '" data-node="coll-' + c.id + '"'
       + ' onclick="toggleTree(event,\'coll-' + c.id + '\')" title="Expand / collapse">'
       + '<span class="caret">▾</span><span class="name">' + esc(c.name) + '</span>' + tag + '</div>';
     if (!d) continue;
@@ -362,8 +404,8 @@ function renderTree() {
     });
     const renderFolder = (f, depth) => {
       const kids = (byParent[String(f.id)] || []).length + (reqByFolder[String(f.id)] || []).length;
-      const fCollapsed = !!state.treeCollapsed['fold-' + f.id];
-      let h = '<div class="node fold' + (fCollapsed ? ' collapsed' : '') + '" data-node="fold-' + f.id + '"'
+      const fExpanded = !!state.treeExpanded['fold-' + f.id];
+      let h = '<div class="node fold' + (fExpanded ? '' : ' collapsed') + '" data-node="fold-' + f.id + '"'
         + ' style="padding-left:' + (10 + depth * 13) + 'px" onclick="toggleTree(event,\'fold-' + f.id + '\')">'
         + '<span class="caret">' + (kids ? '▾' : '·') + '</span><span class="name">' + esc(f.name) + '</span>'
         + '<span class="node-actions">'
@@ -374,12 +416,12 @@ function renderTree() {
       let sub = '';
       (reqByFolder[String(f.id)] || []).forEach((r) => { sub += reqRow(r, depth + 1); });
       (byParent[String(f.id)] || []).forEach((sf) => { sub += renderFolder(sf, depth + 1); });
-      return h + '<div data-sub="fold-' + f.id + '"' + (fCollapsed ? ' class="hidden"' : '') + '>' + sub + '</div>';
+      return h + '<div data-sub="fold-' + f.id + '"' + (fExpanded ? '' : ' class="hidden"') + '>' + sub + '</div>';
     };
     let body = '';
     (byParent.root || []).forEach((f) => { body += renderFolder(f, 0); });
     (reqByFolder.root || []).forEach((r) => { body += reqRow(r, 0); });
-    html += '<div data-sub="coll-' + c.id + '"' + (collapsed ? ' class="hidden"' : '') + '>' + body + '</div>';
+    html += '<div data-sub="coll-' + c.id + '"' + (expanded ? '' : ' class="hidden"') + '>' + body + '</div>';
   }
   t.innerHTML = html;
 }
@@ -496,19 +538,28 @@ function parseQuery(s) {
   } catch (e) { return []; }
 }
 
-function kvRows(pairs, keyPh, valPh) {
-  const html = (pairs || []).map((p) =>
-    '<div class="kvrow"><input class="k" placeholder="' + escAttr(keyPh) + '" value="' + escAttr(p.k) + '" oninput="updateTabCounts()">'
+function kvRowHtml(p, keyPh, valPh, selectable) {
+  return '<div class="kvrow">'
+    + (selectable
+      ? '<input type="checkbox" class="pick" checked title="Include in request" aria-label="Include in request" onchange="toggleKV(this)">'
+      : '')
+    + '<input class="k" placeholder="' + escAttr(keyPh) + '" value="' + escAttr(p.k) + '" oninput="updateTabCounts()">'
     + '<input class="v" placeholder="' + escAttr(valPh) + '" value="' + escAttr(p.v) + '" oninput="updateTabCounts()">'
-    + '<button class="ghost del" onclick="delRow(this)" title="Remove row" aria-label="Remove row">&times;</button></div>'
-  ).join('');
-  return html + '<div><button class="ghost" onclick="addRow(this)">+ row</button></div>';
+    + '<button class="ghost del" onclick="delRow(this)" title="Remove row" aria-label="Remove row">&times;</button></div>';
 }
 
-function addRow(btn) {
+function kvRows(pairs, keyPh, valPh, selectable) {
+  const html = (pairs || []).map((p) => kvRowHtml(p, keyPh, valPh, selectable)).join('');
+  return html + '<div><button class="ghost" onclick="addRow(this,' + !!selectable + ')">+ row</button></div>';
+}
+
+function addRow(btn, selectable) {
   const row = document.createElement('div');
   row.className = 'kvrow';
-  row.innerHTML = '<input class="k" placeholder="key" oninput="updateTabCounts()">'
+  row.innerHTML = (selectable
+    ? '<input type="checkbox" class="pick" checked title="Include in request" aria-label="Include in request" onchange="toggleKV(this)">'
+    : '')
+    + '<input class="k" placeholder="key" oninput="updateTabCounts()">'
     + '<input class="v" placeholder="value" oninput="updateTabCounts()">'
     + '<button class="ghost del" onclick="delRow(this)" title="Remove row" aria-label="Remove row">&times;</button>';
   btn.parentElement.before(row);
@@ -516,10 +567,23 @@ function addRow(btn) {
   updateTabCounts();
 }
 
+// toggleKV dims a detached row and takes it out of the next save/send. Rows
+// without a checkbox (Vars, environment variables) are always included.
+function toggleKV(cb) {
+  const row = cb.closest('.kvrow');
+  if (row) row.classList.toggle('off', !cb.checked);
+  updateTabCounts();
+}
+
+function rowSelected(row) {
+  const cb = $('.pick', row);
+  return !cb || cb.checked;
+}
+
 function delRow(btn) { btn.parentElement.remove(); updateTabCounts(); }
 
 function collectKV(container) {
-  return $$('.kvrow', container).map((r) => ({
+  return $$('.kvrow', container).filter(rowSelected).map((r) => ({
     k: $('.k', r).value,
     v: $('.v', r).value,
   })).filter((p) => p.k !== '' || p.v !== '');
@@ -553,7 +617,8 @@ function updateTabCounts() {
   const filled = (sel) => {
     const box = $(sel);
     if (!box) return 0;
-    return $$('.kvrow', box).filter((r) => $('.k', r).value.trim() !== '' || $('.v', r).value.trim() !== '').length;
+    return $$('.kvrow', box).filter((r) => rowSelected(r)
+      && ($('.k', r).value.trim() !== '' || $('.v', r).value.trim() !== '')).length;
   };
   const set = (name, n) => {
     const el = document.querySelector('[data-count="' + name + '"]');
@@ -705,8 +770,8 @@ async function renderEditor() {
     + '<span id="send-status" class="muted"></span>'
     + '</div>'
     + '<div class="tabs">' + reqTab('headers', 'Headers') + reqTab('params', 'Params') + reqTab('body', 'Body') + reqTab('vars', 'Vars') + reqTab('script', 'Script') + reqTab('tests', 'Tests') + '</div>'
-    + reqPanel('headers', '<div id="req-headers">' + kvRows(objPairs(c.headers), 'Header', 'value') + '</div>')
-    + reqPanel('params', '<div id="req-query">' + kvRows(c.query, 'key', 'value') + '</div>')
+    + reqPanel('headers', '<div id="req-headers">' + kvRows(objPairs(c.headers), 'Header', 'value', true) + '</div>')
+    + reqPanel('params', '<div id="req-query">' + kvRows(c.query, 'key', 'value', true) + '</div>')
     + reqPanel('body', '<div class="row"><select id="req-bodytype" onchange="onBodyTypeChange()">'
       + ['none', 'json', 'raw', 'graphql'].map((t) => '<option value="' + t + '"' + (c.body_type === t ? ' selected' : '') + '>' + t + '</option>').join('')
       + '</select><span class="hint" id="req-body-hint"></span></div>'
@@ -845,8 +910,8 @@ function renderRealtimeEditor() {
     + '<div class="tabs">' + '<button class="tab' + (state.reqTab === 'headers' ? ' active' : '') + '" data-group="req" data-tab="headers" onclick="setReqTab(\'headers\')">Headers<span class="count" data-count="headers"></span></button>'
     + '<button class="tab' + (state.reqTab === 'params' ? ' active' : '') + '" data-group="req" data-tab="params" onclick="setReqTab(\'params\')">Params<span class="count" data-count="params"></span></button>'
     + '<button class="tab' + (state.reqTab === 'vars' ? ' active' : '') + '" data-group="req" data-tab="vars" onclick="setReqTab(\'vars\')">Vars<span class="count" data-count="vars"></span></button></div>'
-    + '<div class="tabpanel" data-group="req" data-panel="headers"' + (state.reqTab === 'headers' ? '' : ' hidden') + '><div id="req-headers">' + kvRows(objPairs(c.headers), 'Header', 'value') + '</div></div>'
-    + '<div class="tabpanel" data-group="req" data-panel="params"' + (state.reqTab === 'params' ? '' : ' hidden') + '><div id="req-query">' + kvRows(c.query, 'key', 'value') + '</div></div>'
+    + '<div class="tabpanel" data-group="req" data-panel="headers"' + (state.reqTab === 'headers' ? '' : ' hidden') + '><div id="req-headers">' + kvRows(objPairs(c.headers), 'Header', 'value', true) + '</div></div>'
+    + '<div class="tabpanel" data-group="req" data-panel="params"' + (state.reqTab === 'params' ? '' : ' hidden') + '><div id="req-query">' + kvRows(c.query, 'key', 'value', true) + '</div></div>'
     + '<div class="tabpanel" data-group="req" data-panel="vars"' + (state.reqTab === 'vars' ? '' : ' hidden') + '><div id="req-vars">' + kvRows([], 'name', 'value') + '</div>'
     + '<p class="hint">Temporary variables win over environments and secrets, and are never stored.</p></div>'
     + (isWS ? '<div class="row"><input id="rt-msg" class="url" placeholder=\'{"hello":"world"}\' onkeydown="if(event.key===\'Enter\')rtSendWS()">'
@@ -1560,6 +1625,10 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#main-nav').addEventListener('click', (ev) => {
     const btn = ev.target.closest('button[data-view]');
     if (btn) setView(btn.dataset.view);
+  });
+  // A route change made by Back/Forward must re-render, not just move the URL.
+  window.addEventListener('popstate', () => {
+    if (state.user) setView(routeView(), { replace: true });
   });
   // User menu: one dropdown for account + admin pages.
   $('#user-menu-btn').addEventListener('click', (ev) => {

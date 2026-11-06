@@ -77,9 +77,12 @@ func mustRequest(t *testing.T, ts *testServer, cookie *http.Cookie, body map[str
 func (ts *testServer) encryptedLogin(t *testing.T, ip, username, password string) map[string]any {
 	t.Helper()
 
-	rec := ts.callFrom("GET", "/api/auth/login-key", ip, nil, nil)
+	rec := ts.callFrom("POST", "/api/auth/login-key", ip, nil, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("login-key = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("login-key Cache-Control = %q, want no-store", cc)
 	}
 	resp := respOf(t, rec)
 	var key struct {
@@ -123,6 +126,16 @@ func TestLoginRefusesUnencryptedPasswords(t *testing.T) {
 	}
 	if len(rec.Result().Cookies()) != 0 {
 		t.Errorf("a refused login still set cookies: %v", rec.Result().Cookies())
+	}
+}
+
+// TestLoginKeyIsPostOnly pins the login-key method: POST keeps browsers and
+// intermediaries from serving a cached challenge, which must be single-use.
+func TestLoginKeyIsPostOnly(t *testing.T) {
+	ts := newTestServer(t)
+	rec := ts.callFrom("GET", "/api/auth/login-key", testRemoteAddr, nil, nil)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET login-key = %d, want 405 (%s)", rec.Code, rec.Body.String())
 	}
 }
 
@@ -883,7 +896,9 @@ func TestFolderRenameAndDelete(t *testing.T) {
 		t.Fatalf("get collection = %d (%s)", code, raw)
 	}
 	var d struct {
-		Folders  []*struct{ ID int64 `json:"id"` } `json:"folders"`
+		Folders []*struct {
+			ID int64 `json:"id"`
+		} `json:"folders"`
 		Requests []*struct {
 			ID       int64  `json:"id"`
 			FolderID *int64 `json:"folder_id"`

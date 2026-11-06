@@ -100,6 +100,8 @@ change it after first login (Users -> reset-password).
 - **导入 / 导出**：集合可导出为 `format: "postlite/v1"` 的 JSON 附件（直接下载原始 JSON，不套 ok 信封），再用 `POST /api/collections/import`（`{json, global}`）导入；`global: true` 仅 admin 可用
 - **Web UI**（`internal/web/static`，无构建步骤）：登录页 + 可折叠 Collections 树 + 请求编辑器（Headers / Params / Body / Vars 分页签）+ Environments / History / Secrets / Users / Settings（后三者为 admin 可见）；交互参考 hoppscotch：按 HTTP 方法配色、三套主题切换、`Ctrl/Cmd+Enter` 发送、`Ctrl/Cmd+S` 保存、响应面板 Body / Headers 分页与一键复制；
   提示与确认全部在页内完成（可堆叠的通知胶囊 + 统一弹窗），**不使用浏览器原生 `alert` / `confirm` / `prompt`**
+- **参数开关**：Headers / Params 每行带复选框，可临时取消某个参数；新增行默认勾选，未勾选的行不随请求发送，也不会写入保存内容
+- **前端路由**：左侧菜单对应真实路径（`/editor`、`/collections`、`/environments`、`/history` 等）；刷新、书签和浏览器前进/后退都会回到原分区，无权限的 admin 路径自动回到 `/editor`
 
 ### 变量解析优先级
 
@@ -145,7 +147,7 @@ change it after first login (Users -> reset-password).
 鉴权失败 `401`、越权 `403`、SSRF 拦截 `451`（并写审计日志）。
 
 ```
-Auth          GET  /api/auth/login-key        POST /api/auth/login         POST /api/auth/logout
+Auth          POST /api/auth/login-key        POST /api/auth/login         POST /api/auth/logout
               GET  /api/auth/me
 Users(admin)  GET/POST /api/users             DELETE /api/users/{id}
               POST /api/users/{id}/disable    POST /api/users/{id}/enable
@@ -168,7 +170,7 @@ Settings      GET/PUT /api/settings           # 含 proxy_url（空 = 直连）
 
 请求体上限 4MB；登录接口按 IP 限流（失败 5 次锁定 15 分钟）。
 
-登录口令不走明文：`GET /api/auth/login-key` 下发临时 RSA 公钥（SPKI，另附 `n` / `e`）与一次性挑战，
+登录口令不走明文：`POST /api/auth/login-key` 下发临时 RSA 公钥（SPKI，另附 `n` / `e`）与一次性挑战，
 前端用 RSA-OAEP/SHA-256 加密 `{"c":挑战,"p":口令}`，以 `{username, enc}` 提交；挑战用后即焚，
 重放与篡改都会得到 `400 bad_login_payload`。**明文 `password` 字段不再被接受**（`400 encryption_required`），
 所以 curl / 脚本走登录也要先拿公钥加密。

@@ -48,6 +48,13 @@ func TestBrandIsPostLite(t *testing.T) {
 	}
 }
 
+func TestBrandLinksToCollections(t *testing.T) {
+	html := readAsset(t, assets(t), "index.html")
+	if !strings.Contains(html, `class="brand" href="/collections"`) {
+		t.Error("the header brand must link to /collections so clicking it reloads into the collection list")
+	}
+}
+
 func TestShellAssetsAreEmbedded(t *testing.T) {
 	f := assets(t)
 	for _, name := range []string{"index.html", "app.js", "app.css"} {
@@ -92,6 +99,11 @@ func TestIndexReferencesOnlyEmbeddedAssets(t *testing.T) {
 			t.Errorf("index.html references the external resource %q; the UI must be self-contained", ref)
 			continue
 		}
+		// The header logo is a real link into the SPA: /collections is served by
+		// the fallback handler, not by the embedded asset map.
+		if ref == "/collections" {
+			continue
+		}
 		name := strings.TrimPrefix(ref, "/")
 		if _, err := f.Open(name); err != nil {
 			t.Errorf("index.html references %q, which is not embedded: %v", ref, err)
@@ -115,7 +127,10 @@ func TestLoginIsEncrypted(t *testing.T) {
 	if strings.Index(html, "/loginenc.js") > strings.Index(html, `src="/app.js"`) {
 		t.Error("loginenc.js must be loaded before app.js")
 	}
-	if !strings.Contains(js, "'/auth/login-key'") || !strings.Contains(js, "window.LoginEnc") {
+	if !strings.Contains(js, "api('/auth/login-key', { method: 'POST' })") {
+		t.Error("app.js must POST /auth/login-key (a cached GET challenge breaks login)")
+	}
+	if !strings.Contains(js, "window.LoginEnc") {
 		t.Error("app.js must fetch the login key and fall back to window.LoginEnc")
 	}
 	if !strings.Contains(js, "encryptPassword($('#login-pass').value)") {
@@ -374,6 +389,32 @@ func TestTreeVerbIsCompact(t *testing.T) {
 	}
 	if !strings.Contains(css, ".verb {") {
 		t.Error("app.css must still style the tree method badge (.verb)")
+	}
+}
+
+// TestViewRoutesAreWired pins the URL half of the left nav. Each section is a
+// real path, so a reload on /environments must restore that section instead of
+// always falling back to /editor. The popstate listener is what makes the
+// browser's Back/Forward buttons re-render rather than just move the URL.
+func TestViewRoutesAreWired(t *testing.T) {
+	js := readAsset(t, assets(t), "app.js")
+
+	if !strings.Contains(js, "function routeView()") {
+		t.Error("app.js must derive the view from the URL path")
+	}
+	if !strings.Contains(js, "function writeRoute(") || !strings.Contains(js, "history[method]") {
+		t.Error("app.js must push/replace the view path when the menu changes")
+	}
+	if !strings.Contains(js, "setView(routeView()") {
+		t.Error("startup must render the route from the URL, not a hard-coded view")
+	}
+	if !strings.Contains(js, "addEventListener('popstate'") {
+		t.Error("Back/Forward must re-render the routed view")
+	}
+	for _, route := range []string{"collections", "editor", "environments", "history", "secrets", "users", "settings"} {
+		if !strings.Contains(js, "'"+route+"'") {
+			t.Errorf("VIEW_ROUTES has no %q entry", route)
+		}
 	}
 }
 

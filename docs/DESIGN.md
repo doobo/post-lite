@@ -164,7 +164,7 @@ CREATE TABLE settings (
 
 ## 5. 认证、会话与 RBAC
 
-- 登录握手：`GET /api/auth/login-key` 下发**进程内临时** RSA-2048 公钥（SPKI base64，另附 `n` / `e`
+- 登录握手：`POST /api/auth/login-key` 下发**进程内临时** RSA-2048 公钥（SPKI base64，另附 `n` / `e`
   供纯 JS 回退用）与 16B 一次性挑战；挑战 2 分钟有效、用后即焚，上限 4096 条，**满了淘汰最旧一条**
   而不是拒绝发新挑战（未认证接口不能因为被刷就让所有人都登不上）。
   前端用 RSA-OAEP/SHA-256 加密 `{"c":挑战,"p":口令}`，以 `{username, enc}` 提交。
@@ -272,7 +272,7 @@ CREATE TABLE settings (
 鉴权失败 `401`、越权 `403`、SSRF 拦截 `451`。
 
 ```
-Auth          GET  /api/auth/login-key  POST /api/auth/login         POST /api/auth/logout
+Auth          POST /api/auth/login-key  POST /api/auth/login         POST /api/auth/logout
               GET  /api/auth/me
 Users(admin)  GET/POST /api/users       DELETE /api/users/{id}
               POST /api/users/{id}/disable   POST /api/users/{id}/enable

@@ -168,7 +168,7 @@ func main() {
 // registerAPIRoutes mounts the REST API on the mux.
 func registerAPIRoutes(mux *http.ServeMux, s *httpapi.Server) {
 	// Auth (public).
-	mux.HandleFunc("GET /api/auth/login-key", s.LoginKey)
+	mux.HandleFunc("POST /api/auth/login-key", s.LoginKey)
 	mux.HandleFunc("POST /api/auth/login", s.Login)
 	mux.HandleFunc("POST /api/auth/logout", s.Logout)
 	mux.HandleFunc("GET /api/auth/me", s.Me)

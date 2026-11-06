@@ -23,6 +23,9 @@ type loginBody struct {
 // repeat the same key as bare numbers for the pure-JS fallback used over plain
 // HTTP, where crypto.subtle does not exist.
 func (s *Server) loginKey(w http.ResponseWriter, r *http.Request) {
+	// A challenge is single-use and must never come from a cache; POST also keeps
+	// browsers/proxies from replaying a stale key, but no-store makes it explicit.
+	w.Header().Set("Cache-Control", "no-store")
 	if s.LoginCrypto == nil {
 		fail(w, http.StatusInternalServerError, "internal", "login encryption is not configured")
 		return
