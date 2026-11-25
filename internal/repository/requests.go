@@ -37,26 +37,52 @@ type RequestPayload struct {
 	UseProxy bool `json:"use_proxy"`
 }
 
+// kvEntry is the editor's stored row shape. `on` is optional: old exports
+// omit it, and those rows are all considered enabled.
+type kvEntry struct {
+	K  string `json:"k"`
+	V  string `json:"v"`
+	On *bool  `json:"on"`
+}
+
+func entryOn(e kvEntry) bool { return e.On == nil || *e.On }
+
+func decodeEntries(raw string) []kvEntry {
+	var arr []kvEntry
+	if raw != "" {
+		_ = json.Unmarshal([]byte(raw), &arr)
+	}
+	return arr
+}
+
 func (p *RequestPayload) HeadersMap() map[string]string {
 	m := map[string]string{}
-	if p.Headers != "" {
-		_ = json.Unmarshal([]byte(p.Headers), &m)
+	if p.Headers == "" {
+		return m
 	}
+	// Current editor shape is [{"k":"X","v":"1","on":true}]; fall back to the
+	// legacy {"X":"1"} object for requests saved before row toggles existed.
+	var arr []kvEntry
+	if err := json.Unmarshal([]byte(p.Headers), &arr); err == nil && arr != nil {
+		for _, e := range arr {
+			if entryOn(e) {
+				m[e.K] = e.V
+			}
+		}
+		return m
+	}
+	_ = json.Unmarshal([]byte(p.Headers), &m)
 	return m
 }
 
-// QueryPairs parses the query JSON: [{"k":"","v":""}].
+// QueryPairs parses the query JSON: [{"k":"","v":"","on":true}].
 func (p *RequestPayload) QueryPairs() [][2]string {
-	var arr []struct {
-		K string `json:"k"`
-		V string `json:"v"`
-	}
-	if p.Query != "" {
-		_ = json.Unmarshal([]byte(p.Query), &arr)
-	}
+	arr := decodeEntries(p.Query)
 	out := make([][2]string, 0, len(arr))
 	for _, q := range arr {
-		out = append(out, [2]string{q.K, q.V})
+		if entryOn(q) {
+			out = append(out, [2]string{q.K, q.V})
+		}
 	}
 	return out
 }

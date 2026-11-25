@@ -1,10 +1,13 @@
 package executor
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,6 +26,17 @@ const (
 // ErrSSRF is returned when a target resolves outside the CIDR whitelist.
 var ErrSSRF = errors.New("ssrf blocked")
 
+// FormField is one row of a form-data body. Files travel as base64 in Value
+// because the browser talks to PostLite over JSON; the server decodes them
+// before writing the multipart part.
+type FormField struct {
+	Key      string `json:"k"`
+	Value    string `json:"v"`
+	Type     string `json:"type"`
+	Filename string `json:"filename"`
+	On       *bool  `json:"on"`
+}
+
 // In is a fully-resolved outbound request.
 type In struct {
 	Method   string
@@ -31,6 +45,7 @@ type In struct {
 	Query    [][2]string
 	BodyType string
 	Body     string
+	FormData []FormField
 	Follow   bool
 	Timeout  time.Duration
 
@@ -324,7 +339,42 @@ func (e *Executor) Execute(ctx context.Context, in In, wl whitelist) (*Out, erro
 
 	method := strings.ToUpper(in.Method)
 	var bodyReader io.Reader
-	if in.BodyType != "none" && in.Body != "" {
+	formContentType := ""
+	if in.BodyType == "form-data" {
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		for _, f := range in.FormData {
+			if f.On != nil && !*f.On {
+				continue
+			}
+			if f.Type == "file" {
+				data, err := base64.StdEncoding.DecodeString(f.Value)
+				if err != nil {
+					return nil, fmt.Errorf("form-data field %q: invalid file data: %w", f.Key, err)
+				}
+				name := f.Filename
+				if name == "" {
+					name = f.Key
+				}
+				part, err := mw.CreateFormFile(f.Key, name)
+				if err != nil {
+					return nil, err
+				}
+				if _, err := part.Write(data); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if err := mw.WriteField(f.Key, f.Value); err != nil {
+				return nil, err
+			}
+		}
+		if err := mw.Close(); err != nil {
+			return nil, err
+		}
+		bodyReader = &buf
+		formContentType = mw.FormDataContentType()
+	} else if in.BodyType != "none" && in.Body != "" {
 		bodyReader = strings.NewReader(in.Body)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, in.URL, bodyReader)
@@ -334,7 +384,11 @@ func (e *Executor) Execute(ctx context.Context, in In, wl whitelist) (*Out, erro
 	for k, v := range in.Headers {
 		req.Header.Set(k, v)
 	}
-	if in.BodyType == "json" && req.Header.Get("Content-Type") == "" {
+	// Multipart needs its generated boundary, so it wins over a user-set
+	// Content-Type; json only supplies a default when the user left it empty.
+	if formContentType != "" {
+		req.Header.Set("Content-Type", formContentType)
+	} else if in.BodyType == "json" && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if len(in.Query) > 0 {

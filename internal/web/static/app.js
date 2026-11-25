@@ -256,15 +256,20 @@ function writeRoute(name, replace) {
 /* ---------- login / shell ---------- */
 
 function showLogin() {
+  $('#boot-view').hidden = true;
   $('#login-view').hidden = false;
   $('#app-view').hidden = true;
   state.user = null;
   flash('');
+  $('#login-user').focus();   // autofocus cannot fire while the view started hidden
 }
 
-async function startApp() {
-  const me = await api('/auth/me');
+// prefetched is the result of the bootstrap /auth/me call: startup performs
+// that request once instead of once to probe the session and again here.
+async function startApp(prefetched) {
+  const me = await (prefetched || api('/auth/me'));
   state.user = me.user;
+  $('#boot-view').hidden = true;
   $('#login-view').hidden = true;
   $('#app-view').hidden = false;
   $('#who').innerHTML = '<b>' + esc(state.user.username) + '</b>'
@@ -521,8 +526,12 @@ function renderTree() {
 
 async function renderCollections() {
   const isAdmin = state.user.role === 'admin';
+  const categories = Array.from(new Set(state.collections.map((c) => c.category).filter(Boolean)));
+  const catOptions = categories.map((v) => '<option value="' + escAttr(v) + '"></option>').join('');
   let html = '<div class="card"><h2>Collections</h2>'
     + '<div class="row"><input id="new-coll-name" placeholder="New collection name">'
+    + '<input id="new-coll-cat" list="coll-categories" placeholder="Category (optional)">'
+    + '<datalist id="coll-categories">' + catOptions + '</datalist>'
     + (isAdmin ? '<label><input type="checkbox" id="new-coll-global"> global</label>' : '')
     + '<button class="primary" onclick="createCollection()">Create</button></div>'
     + '<div class="row"><input type="file" id="import-file" accept=".json">'
@@ -532,9 +541,11 @@ async function renderCollections() {
   for (const c of state.collections) {
     const d = state.treeData[c.id];
     const nReq = d ? (d.requests || []).length : 0;
-    const tag = c.owner_id == null ? ' <span class="badge">global</span>' : '';
-    html += '<div class="card" style="margin-top:10px"><div class="row"><strong>' + esc(c.name) + '</strong>' + tag
+    const tag = (c.owner_id == null ? ' <span class="badge">global</span>' : '')
+      + (c.category ? ' <span class="badge">' + esc(c.category) + '</span>' : '');
+    html += '<div class="card" id="coll-card-' + c.id + '" style="margin-top:10px"><div class="row"><strong>' + esc(c.name) + '</strong>' + tag
       + '<span class="muted">' + nReq + ' requests</span>'
+      + '<button class="ghost" onclick="editCollection(' + c.id + ')">Edit</button>'
       + '<button class="ghost" onclick="newRequest(' + c.id + ')">+ Request</button>'
       + '<button class="ghost" onclick="createFolderPrompt(' + c.id + ')">+ Folder</button>'
       + '<button class="ghost" onclick="exportCollection(' + c.id + ')">Export</button>'
@@ -543,11 +554,41 @@ async function renderCollections() {
   $('#content').innerHTML = html;
 }
 
+// Edit inline in the collection card: the form has three fields, while the
+// shared askInput() dialog only supports one.
+function editCollection(id) {
+  const c = state.collections.find((x) => x.id === id);
+  const card = $('#coll-card-' + id);
+  if (!c || !card) return;
+  const isAdmin = state.user.role === 'admin';
+  card.innerHTML = '<div class="col" style="gap:8px">'
+    + '<div class="row"><label>Name <input id="edit-coll-name-' + id + '" value="' + escAttr(c.name) + '"></label>'
+    + '<label>Category <input id="edit-coll-cat-' + id + '" list="coll-categories" value="' + escAttr(c.category || '') + '"></label>'
+    + (isAdmin ? '<label><input type="checkbox" id="edit-coll-global-' + id + '"' + (c.owner_id == null ? ' checked' : '') + '> global</label>' : '')
+    + '</div><div class="row"><button class="primary" onclick="saveCollectionEdit(' + id + ')">Save</button>'
+    + '<button class="ghost" onclick="renderCollections()">Cancel</button></div></div>';
+}
+
+async function saveCollectionEdit(id) {
+  const nameEl = $('#edit-coll-name-' + id);
+  if (!nameEl) return;
+  const name = nameEl.value.trim();
+  if (!name) return notify('Collection name is required', 'err');
+  const body = { name: name, category: ($('#edit-coll-cat-' + id) || { value: '' }).value.trim() };
+  const globalEl = $('#edit-coll-global-' + id);
+  if (globalEl) body.global = globalEl.checked;
+  await api('/collections/' + id, { method: 'PUT', body: body });
+  await loadCollections();
+  renderCollections();
+  notify('collection saved');
+}
+
 async function createCollection() {
   const name = $('#new-coll-name').value.trim();
   if (!name) return notify('Collection name is required', 'err');
   const global = $('#new-coll-global') ? $('#new-coll-global').checked : false;
-  await api('/collections', { method: 'POST', body: { name: name, global: global } });
+  const category = $('#new-coll-cat') ? $('#new-coll-cat').value.trim() : '';
+  await api('/collections', { method: 'POST', body: { name: name, category: category, global: global } });
   await loadCollections();
   renderCollections();
 }
@@ -617,24 +658,88 @@ async function importCollection() {
 /* ---------- request editor ---------- */
 
 function objPairs(obj) {
+  if (Array.isArray(obj)) return obj.map((p) => ({ k: p.k || '', v: p.v || '', off: p.on === false }));
   return Object.keys(obj || {}).map((k) => ({ k: k, v: obj[k] }));
 }
 
+// Both fields are stored as JSON text. New rows are arrays of {k,v,on} so an
+// unchecked row survives a save; the old object/array shapes stay readable.
 function parseHeaders(s) {
-  try { return JSON.parse(s || '{}') || {}; } catch (e) { return {}; }
+  try {
+    const v = JSON.parse(s || '{}');
+    if (Array.isArray(v)) return v.map((p) => ({ k: p.k || '', v: p.v || '', off: p.on === false }));
+    return Object.keys(v || {}).map((k) => ({ k: k, v: v[k] }));
+  } catch (e) { return []; }
 }
 
 function parseQuery(s) {
   try {
     const a = JSON.parse(s || '[]') || [];
-    return a.map((p) => ({ k: p.k || '', v: p.v || '' }));
+    return a.map((p) => ({ k: p.k || '', v: p.v || '', off: p.on === false }));
   } catch (e) { return []; }
 }
 
+function decodeQueryPart(s) {
+  try { return decodeURIComponent(s.replace(/\+/g, ' ')); } catch (e) { return s; }
+}
+
+// splitUrlQuery is string-based on purpose: the URL may still contain
+// {{VAR}} / {{sec.NAME}} placeholders, which the WHATWG URL parser mangles.
+// A #fragment after the query is kept attached to the cleaned URL.
+function splitUrlQuery(url) {
+  const s = String(url == null ? '' : url);
+  const q = s.indexOf('?');
+  const firstHash = s.indexOf('#');
+  if (q < 0 || (firstHash >= 0 && firstHash < q)) return { url: s, pairs: [] };
+  const hash = s.indexOf('#', q + 1);
+  const end = hash < 0 ? s.length : hash;
+  const clean = s.slice(0, q) + (hash < 0 ? '' : s.slice(hash));
+  const pairs = [];
+  s.slice(q + 1, end).split('&').forEach((chunk) => {
+    if (!chunk) return;
+    const eq = chunk.indexOf('=');
+    const k = decodeQueryPart(eq < 0 ? chunk : chunk.slice(0, eq));
+    const v = eq < 0 ? '' : decodeQueryPart(chunk.slice(eq + 1));
+    if (k !== '') pairs.push({ k: k, v: v });
+  });
+  return { url: clean, pairs: pairs };
+}
+
+// syncUrlParams moves a query string typed/pasted into the URL field over to
+// the Params table, where it can be edited row by row. The query is removed
+// from the URL so the server does not append the same key twice. Existing
+// rows are kept; a row with the same key gets the value from the URL.
+function syncUrlParams() {
+  const input = $('#req-url') || $('#rt-url');
+  const box = $('#req-query');
+  if (!input || !box) return;
+  const parsed = splitUrlQuery(input.value);
+  if (!parsed.pairs.length) return;   // an unfinished '?' is left alone
+  input.value = parsed.url;
+  const rows = $$('.kvrow', box).map((r) => {
+    const pick = $('.pick', r);
+    return { k: $('.k', r).value, v: $('.v', r).value, off: !!pick && !pick.checked };
+  });
+  const used = new Set();   // one existing row per parsed pair, so a=1&a=2 survives
+  parsed.pairs.forEach((p) => {
+    let idx = -1;
+    for (let i = 0; i < rows.length; i++) {
+      if (!used.has(i) && rows[i].k === p.k) { idx = i; break; }
+    }
+    if (idx >= 0) { rows[idx].v = p.v; used.add(idx); }
+    else { used.add(rows.length); rows.push({ k: p.k, v: p.v, off: false }); }
+  });
+  box.innerHTML = kvRows(rows, 'key', 'value', true);
+  updateTabCounts();
+}
+
+// paste fires before the input value changes, so parse on the next tick.
+function queueUrlParamSync() { setTimeout(syncUrlParams, 0); }
+
 function kvRowHtml(p, keyPh, valPh, selectable) {
-  return '<div class="kvrow">'
+  return '<div class="kvrow' + (p.off ? ' off' : '') + '">'
     + (selectable
-      ? '<input type="checkbox" class="pick" checked title="Include in request" aria-label="Include in request" onchange="toggleKV(this)">'
+      ? '<input type="checkbox" class="pick"' + (p.off ? '' : ' checked') + ' title="Include in request" aria-label="Include in request" onchange="toggleKV(this)">'
       : '')
     + '<input class="k" placeholder="' + escAttr(keyPh) + '" value="' + escAttr(p.k) + '" oninput="updateTabCounts()">'
     + '<input class="v" placeholder="' + escAttr(valPh) + '" value="' + escAttr(p.v) + '" oninput="updateTabCounts()">'
@@ -679,6 +784,16 @@ function collectKV(container) {
   return $$('.kvrow', container).filter(rowSelected).map((r) => ({
     k: $('.k', r).value,
     v: $('.v', r).value,
+  })).filter((p) => p.k !== '' || p.v !== '');
+}
+
+// Saving keeps every row, including unchecked ones, so they can be turned back
+// on later. Sending still uses collectKV() above (checked rows only).
+function collectAllKV(container) {
+  return $$('.kvrow', container).map((r) => ({
+    k: $('.k', r).value,
+    v: $('.v', r).value,
+    on: rowSelected(r) !== false,
   })).filter((p) => p.k !== '' || p.v !== '');
 }
 
@@ -729,6 +844,76 @@ function updateTabCounts() {
   };
   badge('req-script', 'script');
   badge('req-test-script', 'tests');
+}
+
+/* ---------- header request finder ---------- */
+
+// Flatten the already-loaded tree: no extra API calls, and every request is
+// searchable by name, method, URL, collection or folder.
+function findRequests(q) {
+  const needle = (q || '').trim().toLowerCase();
+  const hits = [];
+  state.collections.forEach((c) => {
+    const d = state.treeData[c.id] || {};
+    const folders = {};
+    (d.folders || []).forEach((f) => { folders[f.id] = f.name; });
+    (d.requests || []).forEach((r) => {
+      const folder = folders[r.folder_id] || '';
+      const where = [c.name, folder].filter(Boolean).join(' / ');
+      const hay = [r.name, r.method, r.protocol, r.url, c.name, folder].join(' ').toLowerCase();
+      if (!needle || hay.indexOf(needle) >= 0) hits.push({ r: r, where: where });
+    });
+  });
+  return hits;
+}
+
+function renderSearchResults() {
+  const box = $('#search-results');
+  if (!box) return;
+  const hits = findRequests($('#search-input').value);
+  if (!hits.length) {
+    box.innerHTML = '<div class="search-empty">No matching requests.</div>';
+    return;
+  }
+  box.innerHTML = hits.slice(0, 100).map((h) => {
+    const proto = h.r.protocol && h.r.protocol !== 'http';
+    const verb = proto ? String(h.r.protocol).toUpperCase() : h.r.method;
+    return '<button class="search-hit" data-req="' + h.r.id + '" onclick="openSearchHit(' + h.r.id + ')"'
+      + ' title="' + escAttr(h.r.name) + '">'
+      + '<span class="verb ' + methodClass(h.r.method) + '">' + esc(verb) + '</span> '
+      + esc(h.r.name)
+      + '<span class="where">' + esc(h.where) + ' · ' + esc(h.r.url || '') + '</span></button>';
+  }).join('');
+}
+
+function openSearch() {
+  const panel = $('#search-panel');
+  if (!panel) return;
+  panel.hidden = false;
+  $('#btn-search').setAttribute('aria-expanded', 'true');
+  $('#search-input').value = '';
+  renderSearchResults();
+  $('#search-input').focus();
+}
+
+function closeSearch() {
+  const panel = $('#search-panel');
+  if (!panel || panel.hidden) return;
+  panel.hidden = true;
+  $('#btn-search').setAttribute('aria-expanded', 'false');
+}
+
+function onSearchKey(ev) {
+  if (ev.key === 'Escape') { ev.stopPropagation(); closeSearch(); return; }
+  if (ev.key === 'Enter') {
+    const first = $('#search-results .search-hit');
+    if (first) { ev.preventDefault(); openSearchHit(Number(first.dataset.req)); }
+  }
+}
+
+async function openSearchHit(id) {
+  closeSearch();
+  try { await loadRequest(id); } catch (e) { notify(e.message, 'err'); }
 }
 
 function collOptions(selected) {
@@ -856,7 +1041,8 @@ async function renderEditor() {
     }).join('')
     + '</div>'
     + '</span>'
-    + '<input id="req-url" class="url" placeholder="http://host:5680/path — {{VAR}} / {{sec.NAME}} supported" value="' + escAttr(c.url) + '">'
+    + '<input id="req-url" class="url" placeholder="http://host:5680/path — {{VAR}} / {{sec.NAME}} supported" value="' + escAttr(c.url) + '"'
+    + ' onchange="syncUrlParams()" onpaste="queueUrlParamSync()">'
     + '<button id="btn-save" class="ghost" onclick="saveRequest()" title="Save request (Ctrl+S)">Save</button>'
     + '<button id="btn-dup" class="ghost" onclick="duplicateRequest()" title="Save a copy as a new request">Duplicate</button>'
     + '<button id="btn-send" class="primary" onclick="sendRequest()" title="Send request (Ctrl+Enter)">Send</button>'
@@ -883,9 +1069,10 @@ async function renderEditor() {
     + reqPanel('headers', '<div id="req-headers">' + kvRows(objPairs(c.headers), 'Header', 'value', true) + '</div>')
     + reqPanel('params', '<div id="req-query">' + kvRows(c.query, 'key', 'value', true) + '</div>')
     + reqPanel('body', '<div class="row"><select id="req-bodytype" onchange="onBodyTypeChange()">'
-      + ['none', 'json', 'raw', 'graphql'].map((t) => '<option value="' + t + '"' + (c.body_type === t ? ' selected' : '') + '>' + t + '</option>').join('')
+      + ['none', 'json', 'raw', 'graphql', 'form-data'].map((t) => '<option value="' + t + '"' + (c.body_type === t ? ' selected' : '') + '>' + t + '</option>').join('')
       + '</select><span class="hint" id="req-body-hint"></span></div>'
       + '<textarea id="req-body" rows="8" placeholder=\'{"key":"value"}\'>' + esc(c.body || '') + '</textarea>'
+      + '<div id="req-formdata" hidden>' + formRows(parseFormData(c.body)) + '</div>'
       // GraphQL only: the body above is the query document, this is the
       // variables object. Kept in the DOM while hidden so save/send still
       // collect it and Ctrl+F finds it.
@@ -908,6 +1095,108 @@ async function renderEditor() {
   if (state.results) renderResult();
 }
 
+/* ---------- form-data body rows ---------- */
+
+// Form fields live as JSON in the existing body column: {k, v, type, filename,
+// on}. Files are base64 in `v` (the API carries JSON, not multipart itself);
+// the server turns the document into a real multipart request.
+const FORM_FILE_LIMIT = 2 * 1024 * 1024;
+
+function parseFormData(s) {
+  let pairs = [];
+  try { pairs = JSON.parse(s || '[]') || []; } catch (e) { /* not form data */ }
+  pairs = pairs.map((p) => ({
+    k: p.k || '', v: p.v || '',
+    type: p.type === 'file' ? 'file' : 'text',
+    filename: p.filename || '', on: p.on !== false,
+  }));
+  return pairs.length ? pairs : [{ k: '', v: '', type: 'text', filename: '', on: true }];
+}
+
+function formRowHtml(p) {
+  const file = p.type === 'file';
+  return '<div class="kvrow fdrow' + (p.on ? '' : ' off') + '">'
+    + '<input type="checkbox" class="pick"' + (p.on ? ' checked' : '') + ' title="Include in request" aria-label="Include in request" onchange="toggleKV(this)">'
+    + '<input class="k" placeholder="key" value="' + escAttr(p.k) + '">'
+    + '<select class="fd-type" onchange="onFormTypeChange(this)" title="Value type">'
+    + '<option value="text"' + (file ? '' : ' selected') + '>text</option>'
+    + '<option value="file"' + (file ? ' selected' : '') + '>file</option></select>'
+    + '<input class="v fd-text"' + (file ? ' hidden' : '') + ' placeholder="value" value="' + escAttr(file ? '' : p.v) + '">'
+    + '<span class="fd-file-wrap"' + (file ? '' : ' hidden') + '>'
+    + '<input type="file" class="fd-file" onchange="onFormFileChange(this)">'
+    + '<span class="fd-fname muted">' + esc(p.filename || (file ? 'no file chosen' : '')) + '</span></span>'
+    + '<input type="hidden" class="fd-data" value="' + escAttr(file ? p.v : '') + '">'
+    + '<input type="hidden" class="fd-name" value="' + escAttr(p.filename || '') + '">'
+    + '<button class="ghost del" onclick="delRow(this)" title="Remove row" aria-label="Remove row">&times;</button></div>';
+}
+
+function formRows(pairs) {
+  return (pairs || []).map(formRowHtml).join('')
+    + '<div><button class="ghost" onclick="addFormRow(this)">+ row</button></div>';
+}
+
+function addFormRow(btn) {
+  const row = document.createElement('div');
+  row.className = 'kvrow fdrow';
+  row.innerHTML = '<input type="checkbox" class="pick" checked title="Include in request" aria-label="Include in request" onchange="toggleKV(this)">'
+    + '<input class="k" placeholder="key">'
+    + '<select class="fd-type" onchange="onFormTypeChange(this)" title="Value type">'
+    + '<option value="text" selected>text</option><option value="file">file</option></select>'
+    + '<input class="v fd-text" placeholder="value">'
+    + '<span class="fd-file-wrap" hidden><input type="file" class="fd-file" onchange="onFormFileChange(this)"><span class="fd-fname muted">no file chosen</span></span>'
+    + '<input type="hidden" class="fd-data"><input type="hidden" class="fd-name">'
+    + '<button class="ghost del" onclick="delRow(this)" title="Remove row" aria-label="Remove row">&times;</button>';
+  btn.parentElement.before(row);
+  $('.k', row).focus();
+}
+
+function onFormTypeChange(sel) {
+  const row = sel.closest('.fdrow');
+  const isFile = sel.value === 'file';
+  $('.fd-text', row).hidden = isFile;
+  $('.fd-file-wrap', row).hidden = !isFile;
+}
+
+function onFormFileChange(input) {
+  const row = input.closest('.fdrow');
+  const data = $('.fd-data', row);
+  const name = $('.fd-name', row);
+  const label = $('.fd-fname', row);
+  const file = input.files && input.files[0];
+  if (!file) { data.value = ''; name.value = ''; label.textContent = 'no file chosen'; return; }
+  if (file.size > FORM_FILE_LIMIT) {
+    notify('form-data files must be smaller than 2 MB', 'err');
+    input.value = '';
+    data.value = ''; name.value = ''; label.textContent = 'no file chosen';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const s = String(reader.result);
+    data.value = s.slice(s.indexOf(',') + 1);   // drop the data: MIME prefix
+    name.value = file.name;
+    label.textContent = file.name;
+  };
+  reader.readAsDataURL(file);
+}
+
+function collectFormBody() {
+  const box = $('#req-formdata');
+  if (!box) return '';
+  const pairs = $$('.fdrow', box).map((r) => {
+    const type = $('.fd-type', r).value;
+    const pick = $('.pick', r);
+    return {
+      k: $('.k', r).value,
+      type: type,
+      v: type === 'file' ? $('.fd-data', r).value : $('.v', r).value,
+      filename: type === 'file' ? $('.fd-name', r).value : '',
+      on: !pick || pick.checked,
+    };
+  }).filter((p) => p.k !== '' || p.v !== '' || p.filename !== '');
+  return JSON.stringify(pairs);
+}
+
 // BODY_HINTS and onBodyTypeChange() keep the Body panel honest about what will
 // actually be sent for the selected type.
 const BODY_HINTS = {
@@ -915,6 +1204,7 @@ const BODY_HINTS = {
   json: 'sent as-is as application/json; <code>{{VAR}}</code> and <code>{{sec.NAME}}</code> are resolved server-side',
   raw: 'sent as-is; <code>{{VAR}}</code> and <code>{{sec.NAME}}</code> are resolved server-side',
   graphql: 'the query above is POSTed as <code>{"query": …}</code>; placeholders resolve in the query and in the variables',
+  'form-data': 'sent as <code>multipart/form-data</code>; each row is a text value or a file (max 2 MB), and unchecked rows are skipped',
 };
 
 function onBodyTypeChange() {
@@ -923,9 +1213,12 @@ function onBodyTypeChange() {
   const type = sel.value;
   const gql = $('#req-gql');
   if (gql) gql.hidden = type !== 'graphql';
+  const form = $('#req-formdata');
+  if (form) form.hidden = type !== 'form-data';
+  const body = $('#req-body');
+  if (body) body.hidden = type === 'form-data';
   const hint = $('#req-body-hint');
   if (hint) hint.innerHTML = BODY_HINTS[type] || BODY_HINTS.raw;
-  const body = $('#req-body');
   if (body) {
     body.placeholder = type === 'graphql' ? 'query ($id: ID!) { user(id: $id) { name } }' : '{"key":"value"}';
     body.rows = type === 'graphql' ? 10 : 8;
@@ -994,7 +1287,8 @@ function renderRealtimeEditor() {
     + '</div>'
     + '<div class="row">'
     + '<span class="pill">' + (isWS ? 'WS' : 'SSE') + '</span>'
-    + '<input id="rt-url" class="url" placeholder="' + (isWS ? 'ws://host:port/path' : 'http://host:port/events') + ' — {{VAR}} / {{sec.NAME}} supported" value="' + escAttr(c.url) + '">'
+    + '<input id="rt-url" class="url" placeholder="' + (isWS ? 'ws://host:port/path' : 'http://host:port/events') + ' — {{VAR}} / {{sec.NAME}} supported" value="' + escAttr(c.url) + '"'
+    + ' onchange="syncUrlParams()" onpaste="queueUrlParamSync()">'
     + '<button id="btn-rt-save" class="ghost" onclick="saveRequest()" title="Save realtime request">Save</button>'
     + '<button id="btn-dup" class="ghost" onclick="duplicateRequest()" title="Save a copy as a new request">Duplicate</button>'
     + (isWS
@@ -1148,6 +1442,8 @@ function buildAdHoc() {
       url: $('#rt-url') ? $('#rt-url').value : (state.current ? state.current.url : ''),
       headers: headers,
       query: qbox ? collectKV(qbox) : [],
+      headers_all: hbox ? collectAllKV(hbox) : [],
+      query_all: qbox ? collectAllKV(qbox) : [],
       body_type: 'none',
       body: state.proto === 'ws' && $('#rt-proto') ? $('#rt-proto').value : '',
       variables: state.proto === 'sse' && $('#rt-event') ? $('#rt-event').value : '',
@@ -1156,13 +1452,16 @@ function buildAdHoc() {
   }
   const headers = {};
   collectKV($('#req-headers')).forEach((p) => { headers[p.k] = p.v; });
+  const bodyType = $('#req-bodytype').value;
   return {
     method: readMethod(),
     url: $('#req-url').value,
     headers: headers,
     query: collectKV($('#req-query')),
-    body_type: $('#req-bodytype').value,
-    body: $('#req-body').value,
+    headers_all: collectAllKV($('#req-headers')),
+    query_all: collectAllKV($('#req-query')),
+    body_type: bodyType,
+    body: bodyType === 'form-data' ? collectFormBody() : $('#req-body').value,
     variables: $('#req-gql-vars') ? $('#req-gql-vars').value : '',
     // The editor sends ad_hoc even for a saved request, so both scripts have to
     // travel with it or an unsaved edit would be ignored.
@@ -1190,8 +1489,8 @@ async function saveRequest() {
     protocol: state.proto || 'http',
     method: ad.method,
     url: ad.url,
-    headers: JSON.stringify(ad.headers),
-    query: JSON.stringify(ad.query),
+    headers: JSON.stringify(ad.headers_all || ad.headers),
+    query: JSON.stringify(ad.query_all || ad.query),
     body_type: ad.body_type,
     body: ad.body,
     variables: ad.variables,
@@ -1207,7 +1506,7 @@ async function saveRequest() {
       const data = await api('/requests', { method: 'POST', body: payload });
       c.id = data.id;
     }
-    Object.assign(c, payload, { headers: ad.headers, query: ad.query });
+    Object.assign(c, payload, { headers: ad.headers_all || ad.headers, query: ad.query_all || ad.query });
     await loadCollections();
     renderTree();
     if (statusEl) statusEl.textContent = 'saved #' + c.id;
@@ -1234,8 +1533,8 @@ async function duplicateRequest() {
     protocol: state.proto || 'http',
     method: ad.method,
     url: ad.url,
-    headers: JSON.stringify(ad.headers),
-    query: JSON.stringify(ad.query),
+    headers: JSON.stringify(ad.headers_all || ad.headers),
+    query: JSON.stringify(ad.query_all || ad.query),
     body_type: ad.body_type,
     body: ad.body,
     variables: ad.variables,
@@ -1247,7 +1546,7 @@ async function duplicateRequest() {
   try {
     const data = await api('/requests', { method: 'POST', body: payload });
     c.id = data.id;
-    Object.assign(c, payload, { headers: ad.headers, query: ad.query });
+    Object.assign(c, payload, { headers: ad.headers_all || ad.headers, query: ad.query_all || ad.query });
     if (nameSel) nameSel.value = payload.name;
     await loadCollections();
     renderTree();
@@ -1712,6 +2011,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (ev.target === $('#hist-modal')) closeHistModal();
   });
   $('#theme-select').addEventListener('change', (ev) => applyTheme(ev.target.value));
+  // Header finder: icon toggles the panel, Enter opens the first match.
+  $('#btn-search').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    if ($('#search-panel').hidden) openSearch(); else closeSearch();
+  });
+  $('#search-input').addEventListener('input', renderSearchResults);
+  $('#search-input').addEventListener('keydown', onSearchKey);
   $('#login-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     $('#login-err').textContent = '';
@@ -1755,6 +2061,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('click', (ev) => {
     const menu = $('#user-menu');
     if (menu && !menu.hidden && !ev.target.closest('.user-menu-wrap')) closeUserMenu();
+    if (!ev.target.closest('.search-wrap')) closeSearch();
   });
   // The method suggestion menu closes on any click outside its field.
   document.addEventListener('click', (ev) => {
@@ -1764,6 +2071,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (ev.key === 'Escape') {
       closeUserMenu();
       hideMethodPicker();
+      closeSearch();
     }
   });
   // Keyboard first, buttons second: Enter in the URL field and Ctrl/Cmd+Enter
@@ -1771,20 +2079,25 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('keydown', (ev) => {
     if (!$('#btn-send')) return;              // not in the editor
     if (!$('#dialog').hidden) return;         // a dialog owns the keyboard
+    const urlFocused = ev.target && (ev.target.id === 'req-url' || ev.target.id === 'rt-url');
     if (ev.key === 'Enter' && ev.target && ev.target.id === 'req-url') {
       ev.preventDefault();
+      if (urlFocused) syncUrlParams();
       sendRequest();
       return;
     }
     if (!(ev.ctrlKey || ev.metaKey)) return;
     if (ev.key === 'Enter') {
       ev.preventDefault();
+      if (urlFocused) syncUrlParams();
       sendRequest();
     } else if (ev.key.toLowerCase() === 's') {
       ev.preventDefault();
+      if (urlFocused) syncUrlParams();
       saveRequest();
     }
   });
-  // Try to resume an existing session.
-  api('/auth/me').then(() => startApp()).catch(() => showLogin());
+  // Try to resume an existing session. One request, and neither view is
+  // revealed until it settles, so no login flash on a slow connection.
+  startApp(api('/auth/me')).catch(() => showLogin());
 });

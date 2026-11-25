@@ -21,6 +21,7 @@ type Session struct {
 type Collection struct {
 	ID        int64     `json:"id"`
 	Name      string    `json:"name"`
+	Category  string    `json:"category"`
 	OwnerID   *int64    `json:"owner_id"`
 	CreatedAt time.Time `json:"created_at"`
 }

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -310,10 +311,19 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var formData []executor.FormField
+	if bodyT == "form-data" {
+		// The editor stores form rows as JSON in `body`. It has already gone
+		// through the variable resolver above, so {{VAR}} works in any value.
+		if err := json.Unmarshal([]byte(body), &formData); err != nil {
+			fail(w, http.StatusBadRequest, "bad_request", "form-data body must be a JSON array: "+err.Error())
+			return
+		}
+	}
 	in := executor.In{
 		Method: method, URL: urlOut, Headers: headers, Query: query,
-		BodyType: bodyT, Body: body, Follow: b.FollowRedirects, Timeout: timeout,
-		ProxyURL: proxyURL,
+		BodyType: bodyT, Body: body, FormData: formData,
+		Follow: b.FollowRedirects, Timeout: timeout, ProxyURL: proxyURL,
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), timeout+5*time.Second)

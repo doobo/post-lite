@@ -13,9 +13,13 @@ type Collections struct{ db *sql.DB }
 func NewCollections(db *sql.DB) *Collections { return &Collections{db: db} }
 
 func (r *Collections) Create(name string, owner *int64) (int64, error) {
+	return r.CreateWithCategory(name, "", owner)
+}
+
+func (r *Collections) CreateWithCategory(name, category string, owner *int64) (int64, error) {
 	res, err := r.db.Exec(
-		"INSERT INTO collections (name, owner_id, created_at) VALUES (?,?,?)",
-		name, sql.NullInt64{Valid: owner != nil, Int64: derefInt64(owner)}, now(),
+		"INSERT INTO collections (name, category, owner_id, created_at) VALUES (?,?,?,?)",
+		name, category, sql.NullInt64{Valid: owner != nil, Int64: derefInt64(owner)}, now(),
 	)
 	if err != nil {
 		return 0, err
@@ -24,7 +28,7 @@ func (r *Collections) Create(name string, owner *int64) (int64, error) {
 }
 
 func (r *Collections) Get(id int64) (*models.Collection, error) {
-	row := r.db.QueryRow("SELECT id, name, owner_id, created_at FROM collections WHERE id = ?", id)
+	row := r.db.QueryRow("SELECT id, name, category, owner_id, created_at FROM collections WHERE id = ?", id)
 	c, err := scanCollection(row)
 	if err != nil {
 		return nil, err
@@ -40,10 +44,10 @@ func (r *Collections) ListFor(u models.User) ([]*models.Collection, error) {
 		err  error
 	)
 	if u.Role == "admin" {
-		rows, err = r.db.Query("SELECT id, name, owner_id, created_at FROM collections ORDER BY id")
+		rows, err = r.db.Query("SELECT id, name, category, owner_id, created_at FROM collections ORDER BY id")
 	} else {
 		rows, err = r.db.Query(
-			"SELECT id, name, owner_id, created_at FROM collections WHERE owner_id IS NULL OR owner_id = ? ORDER BY id",
+			"SELECT id, name, category, owner_id, created_at FROM collections WHERE owner_id IS NULL OR owner_id = ? ORDER BY id",
 			u.ID)
 	}
 	if err != nil {
@@ -63,6 +67,15 @@ func (r *Collections) ListFor(u models.User) ([]*models.Collection, error) {
 
 func (r *Collections) UpdateName(id int64, name string) error {
 	_, err := r.db.Exec("UPDATE collections SET name = ? WHERE id = ?", name, id)
+	return err
+}
+
+// Update changes every editable collection field. A nil owner means global.
+func (r *Collections) Update(id int64, name, category string, owner *int64) error {
+	_, err := r.db.Exec(
+		"UPDATE collections SET name = ?, category = ?, owner_id = ? WHERE id = ?",
+		name, category, sql.NullInt64{Valid: owner != nil, Int64: derefInt64(owner)}, id,
+	)
 	return err
 }
 
@@ -146,7 +159,7 @@ func scanCollection(row Scanner) (*models.Collection, error) {
 	var c models.Collection
 	var owner sql.NullInt64
 	var createdAt string
-	err := row.Scan(&c.ID, &c.Name, &owner, &createdAt)
+	err := row.Scan(&c.ID, &c.Name, &c.Category, &owner, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

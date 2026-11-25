@@ -40,10 +40,11 @@ func isMethodTokenChar(c byte) bool {
 }
 
 // validBodyTypes is what the executor knows how to send: `none` (no body),
-// `json` / `raw` (sent as typed) and `graphql` (query + variables composed into
-// a GraphQL envelope at send time). An empty value means "none".
+// `json` / `raw` (sent as typed), `graphql` (query + variables composed into
+// a GraphQL envelope at send time) and `form-data` (key/value or file rows
+// composed into a multipart body). An empty value means "none".
 var validBodyTypes = map[string]struct{}{
-	"none": {}, "json": {}, "raw": {}, "graphql": {},
+	"none": {}, "json": {}, "raw": {}, "graphql": {}, "form-data": {},
 }
 
 // validProtocols is the realtime discriminator: http is the original sync
@@ -95,7 +96,7 @@ func checkBodyType(w http.ResponseWriter, bodyType string) bool {
 		return true
 	}
 	if _, ok := validBodyTypes[bodyType]; !ok {
-		fail(w, http.StatusBadRequest, "bad_request", "body_type must be one of none/json/raw/graphql")
+		fail(w, http.StatusBadRequest, "bad_request", "body_type must be one of none/json/raw/graphql/form-data")
 		return false
 	}
 	return true

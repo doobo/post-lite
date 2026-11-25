@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-var migrations = []string{migrationV1, migrationV2, migrationV3, migrationV4, migrationV5, migrationV6, migrationV7}
+var migrations = []string{migrationV1, migrationV2, migrationV3, migrationV4, migrationV5, migrationV6, migrationV7, migrationV8}
 
 const migrationV1 = `
 CREATE TABLE users (
@@ -162,6 +162,13 @@ FROM requests;
 
 DROP TABLE requests;
 ALTER TABLE requests_v7 RENAME TO requests;
+`
+
+// migrationV8 adds a free-form category label used to group collections in
+// the UI. Global scope stays encoded by owner_id (NULL = global), so no extra
+// is_global column is needed.
+const migrationV8 = `
+ALTER TABLE collections ADD COLUMN category TEXT NOT NULL DEFAULT '';
 `
 
 func Migrate(db *sql.DB) error {

@@ -198,7 +198,7 @@ func TestRequestsRejectUnknownBodyType(t *testing.T) {
 	base := map[string]any{
 		"collection_id": colID, "name": "x", "method": "POST", "url": "http://10.0.0.1/x",
 	}
-	for _, bad := range []string{"form-data", "GRAPHQL", "xml"} {
+	for _, bad := range []string{"multipart", "GRAPHQL", "xml"} {
 		body := map[string]any{}
 		for k, v := range base {
 			body[k] = v
@@ -214,8 +214,8 @@ func TestRequestsRejectUnknownBodyType(t *testing.T) {
 		}
 	}
 
-	// The four supported types are accepted, including the new one.
-	for _, good := range []string{"none", "json", "raw", "graphql"} {
+	// All supported types are accepted.
+	for _, good := range []string{"none", "json", "raw", "graphql", "form-data"} {
 		body := map[string]any{}
 		for k, v := range base {
 			body[k] = v

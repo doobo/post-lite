@@ -91,7 +91,8 @@ async function step(name, fn, needsAuth = true) {
 
 // Simulate a real sign-in through the form and report exactly what the page said.
 async function signIn(username, password) {
-  await waitFor('login form', `!!document.querySelector('#login-user')`);
+  await waitFor('login form',
+    `!document.querySelector('#login-view').hidden && !!document.querySelector('#login-user')`);
   await evaluate(`document.querySelector('#login-user').value = ${JSON.stringify(username)};
     document.querySelector('#login-pass').value = ${JSON.stringify(password)};
     document.querySelector('#login-form button[type=submit]').click(); true`);
@@ -399,6 +400,24 @@ async function main() {
     const status = await evaluate(`document.querySelector('#send-status').textContent`);
     expect('error surfaced in the editor', /error|unresolved|placeholder/i.test(status), status);
     return status.trim();
+  });
+
+  await step('EDITOR: query string in the URL is parsed into Params', async () => {
+    await evaluate(clickNav('editor'));
+    await waitFor('editor', `!!document.querySelector('#req-url')`);
+    await evaluate(`(() => {
+      const u = document.querySelector('#req-url');
+      u.value = ${JSON.stringify(BASE + '/?synced=yes&flag=')};
+      u.dispatchEvent(new Event('change'));
+    })(); true`);
+    await waitFor('params parsed from url',
+      `[...document.querySelectorAll('#req-query .kvrow')].some(r => r.querySelector('.k').value === 'synced')`);
+    const rows = await evaluate(`JSON.stringify([...document.querySelectorAll('#req-query .kvrow')]
+      .map(r => [r.querySelector('.k').value, r.querySelector('.v').value]))`);
+    expect('all query keys landed in Params', rows.includes('["synced","yes"]') && rows.includes('["flag",""]'), rows);
+    expect('query removed from URL',
+      (await evaluate(`document.querySelector('#req-url').value`)) === BASE + '/');
+    return 'URL cleaned, Params populated';
   });
 
   await step('GRAPHQL: body type swaps in a variables panel', async () => {

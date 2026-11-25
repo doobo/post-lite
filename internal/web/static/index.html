@@ -9,10 +9,20 @@
 </head>
 <body>
 
-<div id="login-view" class="login-wrap">
+<!-- Both views start hidden: app.js shows one after /auth/me settles. Without
+     this neutral screen a signed-in user on a slow link sees the login card
+     first, then a jump to the dashboard. -->
+<div id="boot-view" class="boot-wrap">
+  <span class="brand-mark" aria-hidden="true">P</span>
+  <span class="muted">Loading PostLite…</span>
+</div>
+
+<div id="login-view" class="login-wrap" hidden>
   <form id="login-form" class="card login-card">
-    <span class="brand-mark" aria-hidden="true">P</span>
-    <h1>PostLite</h1>
+    <div class="login-brand">
+      <span class="brand-mark" aria-hidden="true">P</span>
+      <h1>PostLite</h1>
+    </div>
     <p class="muted" style="margin-top:-4px">Intranet API client — secrets stay server-side.</p>
     <input id="login-user" placeholder="Username" autocomplete="username" autofocus required>
     <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password" required>
@@ -26,6 +36,14 @@
     <a class="brand" href="/collections" title="Collections"><span class="brand-mark" aria-hidden="true">P</span>PostLite</a>
     <span class="spacer"></span>
     <div id="flash" class="toasts" role="status" aria-live="polite"></div>
+    <!-- Quick finder for requests across all collections. -->
+    <div class="search-wrap">
+      <button id="btn-search" class="chip search-trigger" title="Search requests" aria-label="Search requests" aria-expanded="false"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 10l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      <div id="search-panel" class="search-panel" hidden>
+        <input id="search-input" placeholder="Search collections / requests…" autocomplete="off" aria-label="Search requests">
+        <div id="search-results" class="search-results"></div>
+      </div>
+    </div>
     <!-- Appearance picker: app.js sets html[data-theme] from this and remembers
          the choice in localStorage, same idea as hoppscotch's theme switcher. -->
     <select id="theme-select" class="theme-select" aria-label="Theme" title="Appearance">

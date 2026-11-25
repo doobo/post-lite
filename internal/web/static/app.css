@@ -201,6 +201,15 @@ button.ghost:hover { background: var(--panel3); }
 
 /* ---------- login ---------- */
 
+/* Neutral first paint while /auth/me is in flight. */
+.boot-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
 .login-wrap {
   min-height: 100vh;
   display: flex;
@@ -216,8 +225,10 @@ button.ghost:hover { background: var(--panel3); }
   padding: 26px 24px;
   box-shadow: 0 24px 60px var(--shadow);
 }
-.login-card .brand-mark { margin-bottom: 2px; }
-.login-card h1 { font-size: 20px; }
+/* Mark and title share one row so the card stays compact. */
+.login-card .login-brand { display: flex; align-items: center; gap: 9px; }
+.login-card .brand-mark { margin-bottom: 0; width: 26px; height: 26px; font-size: 15px; }
+.login-card h1 { font-size: 20px; margin: 0; }
 .login-card input { width: 100%; }
 .login-card button[type="submit"] { margin-top: 6px; padding: 9px 12px; }
 #login-err { min-height: 1.2em; font-size: 13px; }
@@ -252,7 +263,32 @@ header {
   font-size: 12.5px; color: var(--muted);
 }
 .chip b { color: var(--text); font-weight: 600; }
-header .theme-select { padding: 4px 8px; font-size: 12.5px; }
+/* Header controls share one height, otherwise each grows to its own font and
+   padding (the 16px icon button next to the 12.5px select came out 4px shorter). */
+header .chip,
+header .theme-select { height: 28px; padding-top: 0; padding-bottom: 0; }
+header .theme-select { padding-left: 8px; padding-right: 8px; font-size: 12.5px; }
+
+/* Request finder in the header. */
+.search-wrap { position: relative; }
+.search-trigger { padding: 0 9px; font-size: 16px; line-height: 1; cursor: pointer; }
+.search-trigger:hover { color: var(--text); }
+.search-panel {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 40;
+  width: 380px; padding: 10px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); box-shadow: 0 18px 40px var(--shadow);
+}
+.search-panel input { width: 100%; }
+.search-results { max-height: 340px; overflow-y: auto; margin-top: 8px; }
+.search-hit {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  padding: 7px 8px; border-radius: var(--radius); background: transparent;
+  border: 1px solid transparent; color: inherit; font-size: 12.5px;
+}
+.search-hit:hover, .search-hit:focus-visible { background: var(--panel2); border-color: var(--border); }
+.search-hit .where { display: block; color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+.search-empty { padding: 10px 4px; font-size: 12.5px; }
 
 /* User menu: account + admin pages in one header dropdown. */
 .user-menu-wrap { position: relative; }
@@ -488,6 +524,14 @@ label { color: var(--muted); font-size: 12.5px; }
 .kvrow .pick { flex: none; width: 14px; height: 14px; margin: 0; cursor: pointer; accent-color: var(--accent); }
 .kvrow.off .k, .kvrow.off .v { opacity: .45; }
 .kvrow.off .del { opacity: .55; }
+
+/* form-data rows: key + value-type switch + text value or file picker. */
+.fdrow .k { width: 24%; }
+.fdrow .fd-type { flex: none; width: 74px; padding: 5px 6px; font-size: 12px; }
+.fdrow .fd-text { flex: 1; }
+.fdrow .fd-file-wrap { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fdrow .fd-file { min-width: 0; max-width: 100%; font-size: 12px; }
+.fdrow .fd-fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
 .kvrow .del { padding: 4px 9px; color: var(--muted); line-height: 1; }
 .kvrow .del:hover { color: var(--err); background: var(--err-soft); }
 

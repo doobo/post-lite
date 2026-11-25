@@ -10,8 +10,11 @@ import (
 )
 
 type collectionBody struct {
-	Name   string `json:"name"`
-	Global bool   `json:"global"`
+	Name     string `json:"name"`
+	Category string `json:"category"`
+	// Pointer so a PUT that omits `global` keeps the current scope instead of
+	// silently turning a global collection private.
+	Global *bool `json:"global"`
 }
 
 func (s *Server) listCollections(w http.ResponseWriter, r *http.Request) {
@@ -40,8 +43,9 @@ func (s *Server) createCollection(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "bad_request", "name is required")
 		return
 	}
+	global := b.Global != nil && *b.Global
 	var owner *int64
-	if b.Global {
+	if global {
 		if u.Role != "admin" {
 			fail(w, http.StatusForbidden, "forbidden", "only admins can create global collections")
 			return
@@ -50,12 +54,12 @@ func (s *Server) createCollection(w http.ResponseWriter, r *http.Request) {
 		v := u.ID
 		owner = &v
 	}
-	id, err := s.Store.Collections.Create(b.Name, owner)
+	id, err := s.Store.Collections.CreateWithCategory(b.Name, b.Category, owner)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	if b.Global {
+	if global {
 		s.audit(u.Username, "collection.create_global", "id="+itoa(id)+" name="+b.Name)
 	}
 	okStatus(w, http.StatusCreated, map[string]any{"id": id})
@@ -122,9 +126,32 @@ func (s *Server) updateCollection(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "bad_request", "name is required")
 		return
 	}
-	if err := s.Store.Collections.UpdateName(id, b.Name); err != nil {
+	owner := c.OwnerID
+	if b.Global != nil {
+		wantGlobal := *b.Global
+		if wantGlobal != (owner == nil) {
+			if u.Role != "admin" {
+				fail(w, http.StatusForbidden, "forbidden", "only admins can change collection scope")
+				return
+			}
+			if wantGlobal {
+				owner = nil
+			} else {
+				v := u.ID
+				owner = &v
+			}
+		}
+	}
+	if err := s.Store.Collections.Update(id, b.Name, b.Category, owner); err != nil {
 		fail(w, http.StatusInternalServerError, "internal", err.Error())
 		return
+	}
+	if b.Global != nil && *b.Global != (c.OwnerID == nil) {
+		action := "collection.make_private"
+		if *b.Global {
+			action = "collection.make_global"
+		}
+		s.audit(u.Username, action, "id="+itoa(id)+" name="+b.Name)
 	}
 	ok(w, map[string]any{"id": id})
 }
@@ -305,17 +332,20 @@ type expFolder struct {
 // absent: a proxy preference only means something on the instance that has the
 // proxy configured, so importing a collection elsewhere must not carry it over.
 type expRequest struct {
-	ID        int64             `json:"id"`
-	FolderID  *int64            `json:"folder_id"`
-	Name      string            `json:"name"`
-	Protocol  string            `json:"protocol,omitempty"`
-	Method    string            `json:"method"`
-	URL       string            `json:"url"`
-	Headers   map[string]string `json:"headers"`
-	Query     []kvPair          `json:"query"`
-	BodyType  string            `json:"body_type"`
-	Body      string            `json:"body"`
-	Variables string            `json:"variables,omitempty"` // graphql only
+	ID       int64             `json:"id"`
+	FolderID *int64            `json:"folder_id"`
+	Name     string            `json:"name"`
+	Protocol string            `json:"protocol,omitempty"`
+	Method   string            `json:"method"`
+	URL      string            `json:"url"`
+	Headers  map[string]string `json:"headers"`
+	// HeadersAll keeps unchecked rows across export/import; old exports only
+	// have `headers` and stay readable.
+	HeadersAll []kvPair `json:"headers_all,omitempty"`
+	Query      []kvPair `json:"query"`
+	BodyType   string   `json:"body_type"`
+	Body       string   `json:"body"`
+	Variables  string   `json:"variables,omitempty"` // graphql only
 	// Script / TestScript travel with the collection: they are request logic,
 	// not instance configuration (unlike use_proxy, which is deliberately left
 	// out).
@@ -324,12 +354,14 @@ type expRequest struct {
 }
 
 type kvPair struct {
-	K string `json:"k"`
-	V string `json:"v"`
+	K  string `json:"k"`
+	V  string `json:"v"`
+	On *bool  `json:"on,omitempty"`
 }
 
 type expCollection struct {
 	Name     string       `json:"name"`
+	Category string       `json:"category,omitempty"`
 	Format   string       `json:"format"`
 	Folders  []expFolder  `json:"folders"`
 	Requests []expRequest `json:"requests"`
@@ -360,8 +392,9 @@ func (s *Server) exportCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := expCollection{
-		Name:   c.Name,
-		Format: "postlite/v1",
+		Name:     c.Name,
+		Category: c.Category,
+		Format:   "postlite/v1",
 	}
 	for _, f := range folders {
 		out.Folders = append(out.Folders, expFolder{ID: f.ID, ParentID: f.ParentID, Name: f.Name})
@@ -372,12 +405,18 @@ func (s *Server) exportCollection(w http.ResponseWriter, r *http.Request) {
 			URL: rq.URL, BodyType: rq.BodyType, Body: rq.Body, Variables: rq.Variables,
 			Script: rq.Script, TestScript: rq.TestScript,
 		}
-		if rq.Headers != "" {
-			_ = json.Unmarshal([]byte(rq.Headers), &er.Headers)
+		for k, v := range (&repository.RequestPayload{Headers: rq.Headers}).HeadersMap() {
+			if er.Headers == nil {
+				er.Headers = map[string]string{}
+			}
+			er.Headers[k] = v
 		}
-		for _, p := range parseQuery(rq.Query) {
-			er.Query = append(er.Query, kvPair{K: p[0], V: p[1]})
-		}
+		var allHeaders []kvPair
+		_ = json.Unmarshal([]byte(rq.Headers), &allHeaders)
+		er.HeadersAll = allHeaders
+		var storedQuery []kvPair
+		_ = json.Unmarshal([]byte(rq.Query), &storedQuery)
+		er.Query = storedQuery
 		out.Requests = append(out.Requests, er)
 	}
 	payload, _ := json.MarshalIndent(out, "", "  ")
@@ -419,7 +458,7 @@ func (s *Server) importCollection(w http.ResponseWriter, r *http.Request) {
 		v := u.ID
 		owner = &v
 	}
-	colID, err := s.Store.Collections.Create(exp.Name, owner)
+	colID, err := s.Store.Collections.CreateWithCategory(exp.Name, exp.Category, owner)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -464,7 +503,10 @@ func repositoryRequestPayload(rq expRequest, colID int64, oldToNew map[int64]int
 	p.Variables = rq.Variables
 	p.Script = rq.Script
 	p.TestScript = rq.TestScript
-	if rq.Headers != nil {
+	if rq.HeadersAll != nil {
+		b, _ := json.Marshal(rq.HeadersAll)
+		p.Headers = string(b)
+	} else if rq.Headers != nil {
 		b, _ := json.Marshal(rq.Headers)
 		p.Headers = string(b)
 	}
@@ -488,6 +530,9 @@ func parseQuery(q string) [][2]string {
 	}
 	out := make([][2]string, 0, len(arr))
 	for _, p := range arr {
+		if p.On != nil && !*p.On {
+			continue
+		}
 		out = append(out, [2]string{p.K, p.V})
 	}
 	return out
